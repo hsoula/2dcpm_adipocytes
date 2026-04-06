@@ -203,7 +203,7 @@ impl Default for Params {
             target_perim: 300f64.sqrt() as i64,
             lambda_area: 1.0,
             lambda_perim: 0.1,
-            lambda_iso: 0.2,
+            lambda_iso: 0.1,
             j_cell_medium: 10.0,
             j_cell_cell: 2.0,
             temperature: 20.0,
@@ -252,6 +252,8 @@ pub struct Cpm2d {
     pub area: Vec<i64>,
     /// perim[k] = 4-connected perimeter of cell k
     pub perim: Vec<i64>,
+    /// boundary[w*h] with id's k of boundary cells
+    pub boundary: Vec<u32>,
     mcs_size: usize,
     rng: StdRng,
 }
@@ -268,25 +270,56 @@ impl Cpm2d {
             grid: vec![0u32; p.grid_w * p.grid_h],
             area: vec![0i64; n + 1],
             perim: vec![0i64; n + 1],
+            boundary: vec![0u32; n + 1],
             mcs_size: mcs_size,
             rng: StdRng::from_entropy()
         };
         fs::create_dir_all(&sim.p.png_dir).expect("cannot create png_dir");
         sim.place_initial_cells();
         sim.recompute_stats();
+        sim.boundary = Self::build_boundary(&sim.grid, p.grid_w, p.grid_h);
         sim
     }
 
+    fn build_boundary(grid: &[u32], w: usize, h: usize) -> Vec<u32> {
+        let mut boundary = vec![0u32; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                let s = grid[r * w + c];
+                if s > 0 && Self::pixel_is_boundary(grid, w, h, r, c, s) {
+                    boundary[r * w + c] = s;
+                }
+            }
+        }
+        boundary
+    }
+    #[inline]
+    fn pixel_is_boundary(grid: &[u32], w: usize, h: usize,
+                         r: usize, c: usize, s: u32) -> bool {
+        for (dr, dc) in MOORE {
+            let nr = r as i32 + dr;
+            let nc = c as i32 + dc;
+            let nb = if nr < 0 || nr >= h as i32 || nc < 0 || nc >= w as i32 {
+                0u32  // grid edge counts as medium
+            } else {
+                grid[nr as usize * w + nc as usize]
+            };
+            if nb != s { return true; }
+        }
+        false
+    }
     pub fn from_save(s: SaveState) -> Self {
         let n = s.params.n_cells;
         let mcs_size = s.params.mcs_per_step.unwrap_or(s.params.grid_w * s.params.grid_h);
         fs::create_dir_all(&s.params.png_dir).expect("cannot create png_dir");
+        let mut boundary = Self::build_boundary(&s.grid, s.params.grid_w, s.params.grid_h);
         Self {
             p: s.params.clone(),
             mcs: s.mcs,
             grid: s.grid,
             area: s.area,
             perim: s.perim,
+            boundary: boundary,
             mcs_size: mcs_size,
             rng : StdRng::from_entropy()
         }
@@ -362,7 +395,36 @@ impl Cpm2d {
             }
         }
     }
+    /// Recompute boundary status for (r,c) and all its Moore neighbours.
+    /// Call AFTER self.grid[r*W+c] has been updated to s_new.
+    fn update_boundary_local(&mut self, r: usize, c: usize) {
+        let W = self.p.grid_w;
+        let H = self.p.grid_h;
 
+        // The flipped pixel itself + its 8 Moore neighbours = at most 9 pixels
+        let mut to_recheck: [Option<(usize, usize)>; 9] = [None; 9];
+        to_recheck[0] = Some((r, c));
+        for (i, (dr, dc)) in MOORE.iter().enumerate() {
+            let nr = r as i32 + dr;
+            let nc = c as i32 + dc;
+            if nr >= 0 && nr < H as i32 && nc >= 0 && nc < W as i32 {
+                to_recheck[i + 1] = Some((nr as usize, nc as usize));
+            }
+        }
+
+        for cell in to_recheck.into_iter().flatten() {
+            let (rr, cc) = cell;
+            let s = self.grid[rr * W + cc];
+            let idx = rr * W + cc;
+            self.boundary[idx] = if s > 0
+                && Self::pixel_is_boundary(&self.grid, W, H, rr, cc, s)
+            {
+                s
+            } else {
+                0
+            };
+        }
+    }
     // ── Hamiltonian helpers ───────────────────────────────────────────────────
 
     #[inline]
@@ -487,6 +549,7 @@ impl Cpm2d {
             if s_old > 0 { self.area[s_old as usize] -= 1; }
             if s_new > 0 { self.area[s_new as usize] += 1; }
             self.update_perim_local(r, c, s_old, s_new);
+            self.update_boundary_local(r, c);
         }
     }
 
@@ -590,21 +653,9 @@ impl Cpm2d {
     }
 
     // ── PNG output ────────────────────────────────────────────────────────────
-
     pub fn save_png(&self, path: Option<&str>) {
         let default = format!("{}/frame_{:06}.png", self.p.png_dir, self.mcs);
         let path = path.unwrap_or(&default);
-
-        const COLOURS: &[[u8; 3]] = &[
-            [230, 230, 230], // 0 medium
-            [220,  60,  60], // 1 red
-            [ 60, 180,  60], // 2 green
-            [240, 200,  40], // 3 yellow
-            [ 60, 100, 220], // 4 blue
-            [180,  60, 200], // 5 magenta
-            [ 60, 200, 210], // 6 cyan
-            [200, 140,  60], // 7 orange
-        ];
 
         let scale = 8u32;
         let W = self.p.grid_w as u32;
@@ -618,16 +669,33 @@ impl Cpm2d {
         for px in img.pixels_mut() {
             *px = Rgb([30u8, 30, 30]);
         }
+
         let n = self.p.n_cells;
+
+        // ── Pass 1: cell interiors ────────────────────────────────────────────
         for r in 0..H {
             for c in 0..W {
                 let s = self.grid[(r * W + c) as usize] as usize;
-               // let col = COLOURS[s.min(COLOURS.len() - 1)];
-                //let rgb = Rgb(col);
                 let rgb = Rgb(cell_colour(s, n));
                 for dy in 0..scale {
                     for dx in 0..scale {
                         img.put_pixel(c * scale + dx, r * scale + dy, rgb);
+                    }
+                }
+            }
+        }
+
+        // ── Pass 2: boundary overlay (darker shade) ───────────────────────────
+        const DARKEN: f32 = 0.55; // 1.0 = no change, 0.0 = black
+        for r in 0..H {
+            for c in 0..W {
+                let s = self.boundary[(r * W + c) as usize] as usize;
+                if s == 0 { continue; }
+                let base = cell_colour(s, n);
+                let dark = Rgb(base.map(|ch| (ch as f32 * DARKEN) as u8));
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        img.put_pixel(c * scale + dx, r * scale + dy, dark);
                     }
                 }
             }
