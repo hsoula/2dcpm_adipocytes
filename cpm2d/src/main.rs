@@ -238,7 +238,7 @@ pub struct SaveState {
     /// Flat grid, row-major: index = r * grid_w + c
     pub grid: Vec<u32>,
     pub area: Vec<i64>,
-    pub perim: Vec<i64>,
+    pub perimeter: Vec<i64>,
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ pub struct Cpm2d {
     /// area[0] unused; area[k] = pixel count of cell k
     pub area: Vec<i64>,
     /// perim[k] = 4-connected perimeter of cell k
-    pub perim: Vec<i64>,
+    pub perimeter: Vec<i64>,
     /// boundary[w*h] with id's k of boundary cells
     pub boundary: Vec<u32>,
     mcs_size: usize,
@@ -269,7 +269,7 @@ impl Cpm2d {
             mcs: 0,
             grid: vec![0u32; p.grid_w * p.grid_h],
             area: vec![0i64; n + 1],
-            perim: vec![0i64; n + 1],
+            perimeter: vec![0i64; n + 1],
             boundary: vec![0u32; n + 1],
             mcs_size: mcs_size,
             rng: StdRng::from_entropy()
@@ -318,7 +318,7 @@ impl Cpm2d {
             mcs: s.mcs,
             grid: s.grid,
             area: s.area,
-            perim: s.perim,
+            perimeter: s.perimeter,
             boundary: boundary,
             mcs_size: mcs_size,
             rng : StdRng::from_entropy()
@@ -372,7 +372,7 @@ impl Cpm2d {
         let W = self.p.grid_w;
         let H = self.p.grid_h;
         self.area.iter_mut().for_each(|x| *x = 0);
-        self.perim.iter_mut().for_each(|x| *x = 0);
+        self.perimeter.iter_mut().for_each(|x| *x = 0);
 
         for r in 0..H {
             for c in 0..W {
@@ -388,7 +388,7 @@ impl Cpm2d {
                             self.grid[nr as usize * W + nc as usize] as usize
                         };
                         if nb != s {
-                            self.perim[s] += 1;
+                            self.perimeter[s] += 1;
                         }
                     }
                 }
@@ -501,11 +501,11 @@ impl Cpm2d {
 
         let mut dh = 0.0f64;
         if s_old > 0 && dp_old != 0 {
-            let p = self.perim[s_old as usize];
+            let p = self.perimeter[s_old as usize];
             dh += lam * ((p + dp_old - pt).pow(2) - (p - pt).pow(2)) as f64;
         }
         if s_new > 0 && dp_new != 0 {
-            let p = self.perim[s_new as usize];
+            let p = self.perimeter[s_new as usize];
             dh += lam * ((p + dp_new - pt).pow(2) - (p - pt).pow(2)) as f64;
         }
         dh
@@ -522,7 +522,7 @@ impl Cpm2d {
         let c = self.rng.gen_range(0..W);
         let s_old = self.grid[r * W + c];
         let old_area  = self.area[s_old as usize] as f64;
-        let old_perim  = self.perim[s_old as usize] as f64;
+        let old_perim  = self.perimeter[s_old as usize] as f64;
 
         // Collect in-bounds neighbours with a different sigma
         let mut candidates = arrayvec_neighbours(r, c, W, H, &self.grid, s_old);
@@ -533,7 +533,7 @@ impl Cpm2d {
         let s_new = candidates[idx];
 
         let new_area  = self.area[s_new as usize] as f64;
-        let new_perim  = self.perim[s_new as usize] as f64;
+        let new_perim  = self.perimeter[s_new as usize] as f64;
 
         let lambda_iso = self.p.lambda_iso;
         // ΔH
@@ -607,7 +607,7 @@ impl Cpm2d {
 
             let diff = new_p - old_p;
             if diff != 0 {
-                self.perim[s] += diff;
+                self.perimeter[s] += diff;
             }
         }
     }
@@ -647,7 +647,7 @@ impl Cpm2d {
             println!(
                 "  cell {}: area={:4} (tgt {:3})  perim={:4} (tgt {:3})",
                 k, self.area[k], self.p.target_area,
-                self.perim[k], self.p.target_perim
+                self.perimeter[k], self.p.target_perim
             );
         }
     }
@@ -715,7 +715,7 @@ impl Cpm2d {
             params: self.p.clone(),
             grid: self.grid.clone(),
             area: self.area.clone(),
-            perim: self.perim.clone(),
+            perimeter: self.perimeter.clone(),
         };
         let json = serde_json::to_string_pretty(&s).expect("serialisation failed");
         fs::write(path, json).unwrap_or_else(|e| eprintln!("JSON save error: {e}"));
