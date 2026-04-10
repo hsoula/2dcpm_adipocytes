@@ -43,7 +43,7 @@ pub struct Cpm2d {
     /// boundary[w*h] with id's k of boundary cells
     pub boundary: Vec<u32>,
     mcs_size: usize,
-    rng: StdRng,
+    pub rng: StdRng,
 }
 
 impl Cpm2d {
@@ -52,8 +52,8 @@ impl Cpm2d {
     pub fn new(p: Params) -> Self {
         let n = p.n_cells;
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h);
-        let cells = (0..n)
-            .map(|k| CellState::new((k+1) as u32,p.target_area, p.target_perim))
+        let cells = (0..n+1)
+            .map(|k| CellState::new(k as u32,p.target_area, p.target_perim))
             .collect();
         let mut sim = Self {
             p: p.clone(),
@@ -213,15 +213,17 @@ impl Cpm2d {
 
     fn delta_h_area(&self, s_old: u32, s_new: u32) -> f64 {
         let lam = self.p.lambda_area;
-        let at = self.p.target_area;
+        let at_old = self.cells[s_old as usize].target_area;
+        let at_new = self.cells[s_new as usize].target_area;
+
         let mut dh = 0.0f64;
         if s_old > 0 {
             let a = self.cells[s_old as usize].area;
-            dh += lam * ((a - 1 - at).pow(2) - (a - at).pow(2)) as f64;
+            dh += lam * ((a - 1 - at_old).pow(2) - (a - at_old).pow(2)) as f64;
         }
         if s_new > 0 {
             let a = self.cells[s_new as usize].area;
-            dh += lam * ((a + 1 - at).pow(2) - (a - at).pow(2)) as f64;
+            dh += lam * ((a + 1 - at_new).pow(2) - (a - at_new).pow(2)) as f64;
         }
         dh
     }
@@ -230,7 +232,9 @@ impl Cpm2d {
         let W = self.p.grid_w as i32;
         let H = self.p.grid_h as i32;
         let lam = self.p.lambda_perim;
-        let pt = self.p.target_perim;
+        let pt_old = self.cells[s_old as usize].target_perimeter;
+        let pt_new = self.cells[s_new as usize].target_perimeter;
+
 
         // dp[s] = change in 4-connected perimeter of cell s if (r,c) flips s_old→s_new
         let mut dp_old = 0i64;
@@ -263,11 +267,11 @@ impl Cpm2d {
         let mut dh = 0.0f64;
         if s_old > 0 && dp_old != 0 {
             let p = self.cells[s_old as usize].perimeter;
-            dh += lam * ((p + dp_old - pt).pow(2) - (p - pt).pow(2)) as f64;
+            dh += lam * ((p + dp_old - pt_old).pow(2) - (p - pt_old).pow(2)) as f64;
         }
         if s_new > 0 && dp_new != 0 {
             let p = self.cells[s_new as usize].perimeter;
-            dh += lam * ((p + dp_new - pt).pow(2) - (p - pt).pow(2)) as f64;
+            dh += lam * ((p + dp_new - pt_new).pow(2) - (p - pt_new).pow(2)) as f64;
         }
         dh
     }
