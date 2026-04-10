@@ -110,9 +110,6 @@ fn main() {
 
                 let should_save = cli.save_every > 0 && (mcs + 1) % cli.save_every == 0;
                 let is_last = mcs + 1 == cli.steps;
-                if mcs > cli.steps/2 {
-                    sim.p.target_area = 400;
-                }
                 if should_save || is_last {
                     // pattern: states_mcs000300_1.00_0.10_0.05.json
                     let fname = format!(
