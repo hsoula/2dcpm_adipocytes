@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-
+use std::f64::consts::PI;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Params {
     // Grid dimensions
@@ -37,11 +37,11 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
-            grid_w: 60,
-            grid_h: 60,
-            n_cells: 9,
+            grid_w: 600,
+            grid_h: 600,
+            n_cells: 40*40,
             target_area: 300,
-            target_perim: 300f64.sqrt() as i64,
+            target_perim: (300f64 * 4.0 * PI).sqrt() as i64,
             lambda_area: 1.0,
             lambda_perim: 0.1,
             lambda_iso: 0.1,
