@@ -10,4 +10,4 @@ lambdas have been searched.
 TODO: 
 
     - add lambda for adhesion values 
-    - add individual cells data for targets
+    * add individual cells data for targets

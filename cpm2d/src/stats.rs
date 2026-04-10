@@ -53,12 +53,12 @@ pub fn compute_stats(sim: &Cpm2d) -> (Vec<CellStats>, Vec<NeighbourEdge>) {
     }
 
     let cell_stats =  (1..=n as u32).map(|k| {
-        let a = sim.area[k as usize];
+        let a = sim.cells[k as usize].area;
        CellStats {
             mcs:       sim.mcs,
             cell_id:   k,
             area:      a,
-            perimeter: sim.perimeter[k as usize],
+            perimeter: sim.cells[k as usize].perimeter,
             com_x:     if a > 0 { sum_x[k as usize] as f64 / a as f64 } else { 0.0 },
             com_y:     if a > 0 { sum_y[k as usize] as f64 / a as f64 } else { 0.0 },
         }

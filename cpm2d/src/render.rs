@@ -93,8 +93,8 @@ pub fn console_print(grid : &Cpm2d) {
     for k in 1..=grid.p.n_cells {
         println!(
             "  cell {}: area={:4} (tgt {:3})  perim={:4} (tgt {:3})",
-            k, grid.area[k], grid.p.target_area,
-            grid.perimeter[k], grid.p.target_perim
+            k, grid.cells[k].area, grid.p.target_area,
+            grid.cells[k].perimeter, grid.p.target_perim
         );
     }
 }

@@ -1,10 +1,10 @@
 use std::fs;
-use image::{ImageBuffer, Rgb};
 use rand::prelude::StdRng;
 use serde::{Deserialize, Serialize};
 use crate::boundary::{build_boundary, pixel_is_boundary};
 use crate::energy::delta_isoperimetric;
 use crate::params::Params;
+use crate::cellstate::CellState;
 use rand::prelude::*;
 use crate::render::arrayvec_neighbours;
 pub const MOORE: [(i32, i32); 8] = [
@@ -24,8 +24,7 @@ pub struct SaveState {
     pub params: Params,
     /// Flat grid, row-major: index = r * grid_w + c
     pub grid: Vec<u32>,
-    pub area: Vec<i64>,
-    pub perimeter: Vec<i64>,
+    pub cells:  Vec<CellState>,
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────
@@ -36,9 +35,11 @@ pub struct Cpm2d {
     /// sigma values: 0 = medium, 1..=n_cells = cells
     pub grid: Vec<u32>,
     /// area[0] unused; area[k] = pixel count of cell k
-    pub area: Vec<i64>,
+    //pub area: Vec<i64>,
     /// perim[k] = 4-connected perimeter of cell k
-    pub perimeter: Vec<i64>,
+    //pub perimeter: Vec<i64>,
+    // new version : target area/perimeter is cell based
+    pub cells:   Vec<CellState>,
     /// boundary[w*h] with id's k of boundary cells
     pub boundary: Vec<u32>,
     mcs_size: usize,
@@ -51,12 +52,14 @@ impl Cpm2d {
     pub fn new(p: Params) -> Self {
         let n = p.n_cells;
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h);
+        let cells = (0..n)
+            .map(|k| CellState::new((k+1) as u32,p.target_area, p.target_perim))
+            .collect();
         let mut sim = Self {
             p: p.clone(),
             mcs: 0,
             grid: vec![0u32; p.grid_w * p.grid_h],
-            area: vec![0i64; n + 1],
-            perimeter: vec![0i64; n + 1],
+            cells : cells,
             boundary: vec![0u32; n + 1],
             mcs_size: mcs_size,
             rng: StdRng::from_entropy()
@@ -77,8 +80,7 @@ impl Cpm2d {
             p: s.params.clone(),
             mcs: s.mcs,
             grid: s.grid,
-            area: s.area,
-            perimeter: s.perimeter,
+            cells : s.cells,
             boundary: boundary,
             mcs_size: mcs_size,
             rng : StdRng::from_entropy()
@@ -131,14 +133,13 @@ impl Cpm2d {
     fn recompute_stats(&mut self) {
         let W = self.p.grid_w;
         let H = self.p.grid_h;
-        self.area.iter_mut().for_each(|x| *x = 0);
-        self.perimeter.iter_mut().for_each(|x| *x = 0);
+        self.cells.iter_mut().for_each(|c| {c.area=0; c.perimeter=0;});
 
         for r in 0..H {
             for c in 0..W {
                 let s = self.grid[r * W + c] as usize;
                 if s > 0 {
-                    self.area[s] += 1;
+                    self.cells[s].area += 1;
                     for (dr, dc) in VON_NEUMANN {
                         let nr = r as i32 + dr;
                         let nc = c as i32 + dc;
@@ -148,7 +149,7 @@ impl Cpm2d {
                             self.grid[nr as usize * W + nc as usize] as usize
                         };
                         if nb != s {
-                            self.perimeter[s] += 1;
+                            self.cells[s].perimeter += 1;
                         }
                     }
                 }
@@ -215,11 +216,11 @@ impl Cpm2d {
         let at = self.p.target_area;
         let mut dh = 0.0f64;
         if s_old > 0 {
-            let a = self.area[s_old as usize];
+            let a = self.cells[s_old as usize].area;
             dh += lam * ((a - 1 - at).pow(2) - (a - at).pow(2)) as f64;
         }
         if s_new > 0 {
-            let a = self.area[s_new as usize];
+            let a = self.cells[s_new as usize].area;
             dh += lam * ((a + 1 - at).pow(2) - (a - at).pow(2)) as f64;
         }
         dh
@@ -261,11 +262,11 @@ impl Cpm2d {
 
         let mut dh = 0.0f64;
         if s_old > 0 && dp_old != 0 {
-            let p = self.perimeter[s_old as usize];
+            let p = self.cells[s_old as usize].perimeter;
             dh += lam * ((p + dp_old - pt).pow(2) - (p - pt).pow(2)) as f64;
         }
         if s_new > 0 && dp_new != 0 {
-            let p = self.perimeter[s_new as usize];
+            let p = self.cells[s_new as usize].perimeter;
             dh += lam * ((p + dp_new - pt).pow(2) - (p - pt).pow(2)) as f64;
         }
         dh
@@ -281,8 +282,8 @@ impl Cpm2d {
         let r = self.rng.gen_range(0..H);
         let c = self.rng.gen_range(0..W);
         let s_old = self.grid[r * W + c];
-        let old_area  = self.area[s_old as usize] as f64;
-        let old_perim  = self.perimeter[s_old as usize] as f64;
+        let old_area  = self.cells[s_old as usize].area as f64;
+        let old_perim  = self.cells[s_old as usize].perimeter as f64;
 
         // Collect in-bounds neighbours with a different sigma
         let mut candidates = arrayvec_neighbours(r, c, W, H, &self.grid, s_old);
@@ -292,8 +293,8 @@ impl Cpm2d {
         let idx = self.rng.gen_range(0..candidates.len());
         let s_new = candidates[idx];
 
-        let new_area  = self.area[s_new as usize] as f64;
-        let new_perim  = self.perimeter[s_new as usize] as f64;
+        let new_area  = self.cells[s_new as usize].area as f64;
+        let new_perim  = self.cells[s_new as usize].perimeter as f64;
 
         let lambda_iso = self.p.lambda_iso;
         // ΔH
@@ -306,9 +307,9 @@ impl Cpm2d {
         let accept = dh <= 0.0 || self.rng.gen_range(0f64..1f64) < (-dh / T).exp();
         if accept {
             self.grid[r * W + c] = s_new;
-            if s_old > 0 { self.area[s_old as usize] -= 1; }
-            if s_new > 0 { self.area[s_new as usize] += 1; }
-            self.update_perim_local(r, c, s_old, s_new);
+            if s_old > 0 { self.cells[s_old as usize].area -= 1; }
+            if s_new > 0 { self.cells[s_new as usize].area += 1; }
+            self.update_perimeter_local(r, c, s_old, s_new);
             self.update_boundary_local(r, c);
         }
     }
@@ -322,7 +323,7 @@ impl Cpm2d {
 
     // ── Local perimeter update ────────────────────────────────────────────────
 
-    fn update_perim_local(&mut self, r: usize, c: usize, s_old: u32, s_new: u32) {
+    fn update_perimeter_local(&mut self, r: usize, c: usize, s_old: u32, s_new: u32) {
         let W = self.p.grid_w as i32;
         let H = self.p.grid_h as i32;
 
@@ -367,7 +368,7 @@ impl Cpm2d {
 
             let diff = new_p - old_p;
             if diff != 0 {
-                self.perimeter[s] += diff;
+                self.cells[s].perimeter += diff;
             }
         }
     }
@@ -381,8 +382,7 @@ impl Cpm2d {
             mcs: self.mcs,
             params: self.p.clone(),
             grid: self.grid.clone(),
-            area: self.area.clone(),
-            perimeter: self.perimeter.clone(),
+            cells: self.cells.clone(),
         };
         let json = serde_json::to_string_pretty(&s).expect("serialisation failed");
         fs::write(path, json).unwrap_or_else(|e| eprintln!("JSON save error: {e}"));
