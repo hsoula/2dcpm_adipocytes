@@ -14,6 +14,7 @@ use std::str::FromStr;
 use rand::prelude::*;
 use cpm2d::render::save_png;
 use rand_distr::{Distribution, Normal};
+use rand_distr::num_traits::Pow;
 use cpm2d::cellstate::CellState;
 
 /// Parses "min,max,step" from the command line.
@@ -104,19 +105,21 @@ fn main() {
             p.lambda_perim = *lp;
             p.lambda_iso = *li;
             p.total_steps = cli.steps;
-            p.n_cells = 16;
+            p.n_cells = 64;
             p.png_every = usize::MAX;   // suppress PNG during sweep
             p.console_every = usize::MAX;
             p.save_every = usize::MAX;   // we control saving ourselves
-            let mean  = 150f64;
-            let std  = 100f64;
+            p.wall_inset =0;
+            let mean  = 10f64;
+            let std  = 7f64;
+            let voronoi = true;
 
-            let mut sim = Cpm2d::new(p);
+            let mut sim = Cpm2d::new(p, voronoi);
             let areas : Vec<f64>= (0..sim.p.n_cells + 1)
                 .map(|_| sim.rng.gen_range(mean - std..mean + std))
                 .collect();
             sim.cells = (0..sim.p.n_cells + 1)
-                .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter, areas[k] as i64, (areas[k] * 4.0).sqrt() as i64))
+                .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter, areas[k].pow(2) as i64, (areas[k].pow(2) as f64* 4.0).sqrt() as i64))
                 .collect();
             for mcs in 0..cli.steps {
                 sim.run_mcs();

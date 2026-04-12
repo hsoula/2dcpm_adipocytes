@@ -1,10 +1,5 @@
-//! cargo run --bin sweep -- --la 0.5,1.0,2.0 --lp 0.05,0.1,0.2 --li 0.0,0.1
-// cargo run --release --bin analyze_1cell -- \
-//     --la 0.5,2.0,0.5 \
-//     --lp 0.05,0.2,0.05 \
-//     --li 0.0,0.1,0.1 \
-//     --steps 500 \
-//     --save-every 50
+//!## To run the simulation with 1 cells
+// cargo run --release --bin simulat1_4cell --  --la 1.0,1.0,1.0  --lp 0.1,0.9,0.1 --li 0.0,0.0,0.1  --steps 2000 --save-every 1000 --out-dir sweep4
 
 
 use clap::Parser;
@@ -98,8 +93,9 @@ fn main() {
             p.png_every = usize::MAX;   // suppress PNG during sweep
             p.console_every = usize::MAX;
             p.save_every = usize::MAX;   // we control saving ourselves
-
-            let mut sim = Cpm2d::new(p);
+            p.wall_inset = 0;
+            
+            let mut sim = Cpm2d::new(p, false);
 
             for mcs in 0..cli.steps {
                 sim.run_mcs();

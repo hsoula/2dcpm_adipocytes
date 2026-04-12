@@ -57,7 +57,7 @@ pub struct Cpm2d {
 impl Cpm2d {
     // ── Construction ─────────────────────────────────────────────────────────
 
-    pub fn new(p: Params) -> Self {
+    pub fn new(p: Params, voronoi: bool) -> Self {
         let n = p.n_cells;
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h);
         let cells = (0..n+1)
@@ -75,7 +75,12 @@ impl Cpm2d {
             rng: StdRng::from_entropy()
         };
         fs::create_dir_all(&sim.p.png_dir).expect("cannot create png_dir");
-        sim.place_initial_cells_voronoi();
+        if voronoi {
+            sim.place_initial_cells_voronoi();
+        }
+        else {
+            sim.place_initial_cells();
+        }
         sim.recompute_stats();
         sim.boundary = build_boundary(&sim.grid, p.grid_w, p.grid_h);
         sim
@@ -547,7 +552,7 @@ impl Cpm2d {
     // ── Serialisation ─────────────────────────────────────────────────────────
 
     pub fn save_state(&self, path: Option<&str>) {
-        let default = format!("{}/state_mcs{:06}.json", self.p.frames_dir, self.mcs);
+        let default = format!("{}/frames/state_mcs{:06}.json", self.p.frames_dir, self.mcs);
         let path = path.unwrap_or(&default);
         let s = SaveState {
             mcs: self.mcs,

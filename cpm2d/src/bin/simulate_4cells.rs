@@ -1,10 +1,5 @@
-//! cargo run --bin sweep -- --la 0.5,1.0,2.0 --lp 0.05,0.1,0.2 --li 0.0,0.1
-// cargo run --release --bin analyze_1cell -- \
-//     --la 0.5,2.0,0.5 \
-//     --lp 0.05,0.2,0.05 \
-//     --li 0.0,0.1,0.1 \
-//     --steps 500 \
-//     --save-every 50
+//
+
 
 
 use clap::Parser;
@@ -103,7 +98,7 @@ fn main() {
             p.console_every = usize::MAX;
             p.save_every = usize::MAX;   // we control saving ourselves
 
-            let mut sim = Cpm2d::new(p);
+            let mut sim = Cpm2d::new(p, false);
 
             for mcs in 0..cli.steps {
                 sim.run_mcs();

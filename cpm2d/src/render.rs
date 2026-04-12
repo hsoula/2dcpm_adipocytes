@@ -95,7 +95,8 @@ pub fn console_print(sim: &Cpm2d) {
 // ── PNG ───────────────────────────────────────────────────────────────────────
 
 pub fn save_png(sim: &Cpm2d, path: Option<&str>) {
-    let default = format!("{}/frame_{:06}.png", sim.p.png_dir, sim.mcs);
+    let default = format!("{}/png/frame_{:06}.png", sim.p.frames_dir, sim.mcs);
+    println!("Save png to {}", default);
     let path    = path.unwrap_or(&default);
 
     let scale = 8u32;

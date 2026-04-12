@@ -1,75 +1,94 @@
 //! 2-D Cellular Potts Model (CPM)
 //!
-//! Features
-//! --------
-//! - Hard (non-periodic) boundary conditions
-//! - Square-block initial conditions, cells grow toward target area
-//! - PNG frame output via the `image` crate
-//! - ANSI coloured console display
-//! - JSON serialisation / deserialisation (serde_json)
 //!
-//! Usage
-//! -----
-//!   cargo run --release                        # fresh run
-//!   cargo run --release -- --load state.json  # resume from save
-
-use std::env::join_paths;
-use std::f64;
-use std::fs;
-
-use image::{ImageBuffer, Rgb};
-use rand::prelude::*;
-use serde::{Deserialize, Serialize};
-
-// ─── Parameters ──────────────────────────────────────────────────────────────
-
-use std::f64::consts::PI;
-use cpm2d::cellstate::CellState;
+use std::{f64, fs};
+use std::path::Path;
+use clap::Parser;
 use cpm2d::params::Params;
 use cpm2d::grid::Cpm2d;
 use cpm2d::render::{save_png, console_print};
-/// Represents a single cell in the CPM lattice
-pub struct Cell {
-    pub area: f64,          // current pixel count
-    pub perimeter: f64,     // current boundary length
-    pub target_area: f64,   // A₀
-    pub target_perim: f64,  // P₀
-    pub hull_area: f64,      // convex hull area (method 1 only)
-    pub boundary_pixels: Vec<(i32, i32, u8)>, // (x, y, neighbor_count)
-}
-
-impl Cell {
-    /// Number of same-cell neighbors of a boundary pixel (0..8)
-    pub fn neighbor_count(pixels: &[(i32,i32)], x: i32, y: i32) -> u8 {
-        let offsets = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)];
-        offsets.iter().filter(|&(dx,dy)| pixels.contains(&(x+dx, y+dy))).count() as u8
-    }
-}
-
+use std::f64::consts::PI;
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+#[derive(Parser)]
+struct Cli {
+    #[arg(long, default_value = "60")]
+    grid_w : usize,
+    #[arg(long, default_value = "60")]
+    grid_h : usize,
+    #[arg(long, default_value = "1.0")]
+    la: f64,   // --la 0.5,2.0,0.5
+    #[arg(long, default_value = "0.2")]
+    lp: f64,   // --lp 0.05,0.2,0.05
+    #[arg(long, default_value = "0.1")]
+    li: f64,   // --li 0.0,0.1,0.1
+    #[arg(long, default_value = "16")]
+    n_cells: usize,
+    #[arg(long, default_value = "data/simulate/")]
+    out_dir: String,
+    #[arg(long, default_value = "1000")]
+    steps: usize,
+    #[arg(long, default_value = "100")]
+    save_every: usize,
+    #[arg(long, default_value = "false")]
+    voronoi_start : bool,
+    #[arg(long, default_value = "")]
+    load : String,
+    #[arg(long, default_value = "0")]
+    wall_inset: usize,
+    #[arg(long, default_value = "200")]
+    target_area : i64,
+}
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
 
-    let mut sim = if args.len() > 1 { let path = args.get(1).expect("--load requires a path argument");
-        Cpm2d::load_state(path)
-    } else {
-        Cpm2d::new(Params::default())
+    let cli = Cli::parse();
+    let path = Path::new(&cli.load);
+    let voronoi= cli.voronoi_start;
+    let la = cli.la;
+    let lp = cli.lp;
+    let li = cli.li;
+    let n_cells = cli.n_cells;
+    let steps = cli.steps;
+    let save_every = cli.save_every;
+    let wx = cli.grid_w;
+    let hx = cli.grid_h;
+    let out_dir = cli.out_dir;
+    let wall_inset = cli.wall_inset;
+    let target_area = cli.target_area;
+    let target_perimeter = (target_area as f64 * 4.0 * PI).sqrt() as i64;
+    fs::create_dir_all(out_dir.clone()).unwrap();
+    fs::create_dir_all(format!("{}/frames/",out_dir.clone())).unwrap();
+    fs::create_dir_all(format!("{}/png/",out_dir.clone())).unwrap();
+
+    let mut sim: Cpm2d = if path.exists() {
+        Cpm2d::load_state(path.to_str().unwrap())
+    }
+    else {
+        let mut p = Params::default();
+        p.lambda_area = la;
+        p.lambda_perim = lp;
+        p.lambda_iso = li;
+        p.n_cells = n_cells;
+        p.total_steps = steps;
+        p.grid_h = hx;
+        p.grid_w = wx;
+        p.frames_dir = out_dir.clone();
+        p.save_every = save_every;
+        p.console_every = save_every;
+        p.png_every = save_every;
+        p.wall_inset = wall_inset;
+        p.target_area = target_area;
+        p.target_perim = target_perimeter;
+        Cpm2d::new(p, voronoi)
     };
 
-    let start_area = 60i64;
-    let end_area = 200i64;
     let p = sim.p.clone();
-    let end_mcs = sim.mcs + p.total_steps;
-    sim.cells = (0..sim.p.n_cells+1)
-        .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter,start_area as i64, (start_area as f64 * 4.0 * PI).sqrt() as i64))
-        .collect();
-
+    let end_mcs = p.total_steps;
 
     println!(
-        "Starting CPM2D  grid={}×{}  cells={}  T={}  MCS={}",
-        p.grid_w, p.grid_h, p.n_cells, p.temperature, p.total_steps
+        "Starting CPM2D  grid={}×{}  cells={}  T={}  MCS={} save_every={}",
+        p.grid_w, p.grid_h, p.n_cells, p.temperature, p.total_steps, p.save_every
     );
 
     console_print(&sim);
@@ -78,27 +97,16 @@ fn main() {
     while sim.mcs < end_mcs {
         sim.run_mcs();
 
-        if sim.mcs > end_mcs / 2 {
-            let d : f64 = (end_mcs as f64) / 2.0;
-            let t = (sim.mcs as f64  - d) / d;
-            let target_area = (start_area as f64) + ((end_area - start_area) as f64) * t;
+        let should_save = cli.save_every > 0 && sim.mcs % cli.save_every == 0;
+        let is_last = sim.mcs + 1 == cli.steps;
 
-            sim.cells = (0..sim.p.n_cells+1)
-                .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter,target_area as i64, (target_area * 4.0 * PI).sqrt() as i64))
-                .collect();
-        }
-        if sim.mcs % p.console_every == 0 {
+        if should_save || is_last {
             console_print(&sim);
-        }
-        if sim.mcs % p.png_every == 0 {
             save_png(&sim, None);
-        }
-        if sim.mcs % p.save_every == 0 {
             sim.save_state(None);
         }
     }
 
     println!("\nDone. Final MCS={}", sim.mcs);
-    sim.save_state(Some("states/state_final.json"));
-    save_png(&sim, Some(&format!("{}/final.png", p.png_dir)));
+
 }
