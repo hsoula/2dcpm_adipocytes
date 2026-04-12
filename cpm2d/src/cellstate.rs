@@ -12,7 +12,7 @@ pub struct CellState {
 }
 
 impl CellState {
-    pub fn new(id: u32, target_area: i64, target_perimeter: i64 ) -> Self {
-        Self { id, area: 0, perimeter: 0, target_area, target_perimeter }
+    pub fn new(id: u32, area: i64, perimeter:i64, target_area: i64, target_perimeter: i64 ) -> Self {
+        Self { id, area: area, perimeter: perimeter, target_area, target_perimeter }
     }
 }
