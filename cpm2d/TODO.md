@@ -1,6 +1,6 @@
-Adipocytes 2D code
+# Adipocytes 2D code
 
-# Pre-analysis 
+## Pre-analysis 
 Need to find a sweet spot for the parameters: so far only the area/perimeter
 lambdas have been searched.
 
@@ -9,5 +9,6 @@ lambdas have been searched.
 
 TODO: 
 
-    - add lambda for adhesion values 
+    * add lambda for adhesion values 
     * add individual cells data for targets
+    - simulation with connected cells loader

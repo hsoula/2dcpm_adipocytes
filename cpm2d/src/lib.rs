@@ -5,3 +5,6 @@ pub mod grid;
 pub mod render;
 pub mod stats;
 pub mod cellstate;
+pub mod init;
+pub mod wall;
+pub mod fliprecord;

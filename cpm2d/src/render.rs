@@ -61,69 +61,61 @@ pub fn cell_colour(s: usize, n_cells: usize) -> [u8; 3] {
     let val = if k % 2 == 0 { 1.00 } else { 0.90 };
     hsv_to_rgb(hue, sat, val)
 }
-pub fn console_print(grid : &Cpm2d) {
-    // ANSI background colours: 0=reset, 1=red, 2=green, 3=yellow, 4=blue, …
-    const BG: &[&str] = &[
-        "\x1b[0m  ",   // 0 medium
-        "\x1b[41m  ",  // 1 red
-        "\x1b[42m  ",  // 2 green
-        "\x1b[43m  ",  // 3 yellow
-        "\x1b[44m  ",  // 4 blue
-        "\x1b[45m  ",  // 5 magenta
-        "\x1b[46m  ",  // 6 cyan
-        "\x1b[47m  ",  // 7 white
-        "\x1b[101m  ", // 8 bright red
-    ];
-    let reset = "\x1b[0m";
-    let W = grid.p.grid_w;
-    let H = grid.p.grid_h;
-    let n = grid.p.n_cells;
+// ── Console ──────────────────────────────────────────────────────────────────
 
-    println!("\n─── MCS {} ───", grid.mcs);
+pub fn console_print(sim: &Cpm2d) {
+    let reset = "\x1b[0m";
+    let W = sim.p.grid_w;
+    let H = sim.p.grid_h;
+    let n = sim.p.n_cells;
+
+    println!("\n─── MCS {} ───", sim.mcs);
     for r in 0..H {
         for c in 0..W {
-            let s = grid.grid[r * W + c] as usize;
-            let [red, grn, blu] = cell_colour(s, n);
-            print!("\x1b[48;2;{red};{grn};{blu}m  ");
-            // let idx = s.min(BG.len() - 1);
-            //print!("{}", BG[idx]);
+            if sim.wall.contains(r, c) {
+                // bright white block for wall
+                print!("\x1b[107m  ");
+            } else {
+                let s = sim.grid[r * W + c] as usize;
+                let [red, grn, blu] = cell_colour(s, n);
+                print!("\x1b[48;2;{red};{grn};{blu}m  ");
+            }
         }
         println!("{}", reset);
     }
-    for k in 1..=grid.p.n_cells {
+    for k in 1..=sim.p.n_cells {
         println!(
             "  cell {}: area={:4} (tgt {:3})  perim={:4} (tgt {:3})",
-            k, grid.cells[k].area, grid.p.target_area,
-            grid.cells[k].perimeter, grid.p.target_perim
+            k, sim.cells[k].area, sim.cells[k].target_area,
+            sim.cells[k].perimeter, sim.cells[k].target_perimeter,
         );
     }
 }
 
-// ── PNG output ────────────────────────────────────────────────────────────
-pub fn save_png(grid : &Cpm2d, path: Option<&str>) {
-    let default = format!("{}/frame_{:06}.png", grid.p.png_dir, grid.mcs);
-    let path = path.unwrap_or(&default);
+// ── PNG ───────────────────────────────────────────────────────────────────────
+
+pub fn save_png(sim: &Cpm2d, path: Option<&str>) {
+    let default = format!("{}/frame_{:06}.png", sim.p.png_dir, sim.mcs);
+    let path    = path.unwrap_or(&default);
 
     let scale = 8u32;
-    let W = grid.p.grid_w as u32;
-    let H = grid.p.grid_h as u32;
-    let img_w = W * scale;
-    let img_h = H * scale + 20;
+    let W     = sim.p.grid_w as u32;
+    let H     = sim.p.grid_h as u32;
 
-    let mut img = ImageBuffer::<Rgb<u8>, _>::new(img_w, img_h);
+    let mut img = ImageBuffer::<Rgb<u8>, _>::new(W * scale, H * scale + 20);
+    for px in img.pixels_mut() { *px = Rgb([30u8, 30, 30]); }
 
-    // Fill background (label bar)
-    for px in img.pixels_mut() {
-        *px = Rgb([30u8, 30, 30]);
-    }
+    let n = sim.p.n_cells;
 
-    let n = grid.p.n_cells;
-
-    // ── Pass 1: cell interiors ────────────────────────────────────────────
+    // ── Pass 1: cells ────────────────────────────────────────────────────────
     for r in 0..H {
         for c in 0..W {
-            let s = grid.grid[(r * W + c) as usize] as usize;
-            let rgb = Rgb(cell_colour(s, n));
+            let rgb = if sim.wall.contains(r as usize, c as usize) {
+                Rgb([255u8, 255, 255])   // wall: pure white
+            } else {
+                let s = sim.grid[(r * W + c) as usize] as usize;
+                Rgb(cell_colour(s, n))
+            };
             for dy in 0..scale {
                 for dx in 0..scale {
                     img.put_pixel(c * scale + dx, r * scale + dy, rgb);
@@ -132,17 +124,22 @@ pub fn save_png(grid : &Cpm2d, path: Option<&str>) {
         }
     }
 
-    // ── Pass 2: boundary overlay (darker shade) ───────────────────────────
-    const DARKEN: f32 = 0.55; // 1.0 = no change, 0.0 = black
-    for r in 0..H {
-        for c in 0..W {
-            let s = grid.boundary[(r * W + c) as usize] as usize;
-            if s == 0 { continue; }
-            let base = cell_colour(s, n);
-            let dark = Rgb(base.map(|ch| (ch as f32 * DARKEN) as u8));
-            for dy in 0..scale {
-                for dx in 0..scale {
-                    img.put_pixel(c * scale + dx, r * scale + dy, dark);
+    let bound = false;
+
+    if bound {
+        // ── Pass 2: cell boundaries (darker shade) ────────────────────────────────
+        const DARKEN: f32 = 0.55;
+        for r in 0..H {
+            for c in 0..W {
+                // never darken wall pixels
+                if sim.wall.contains(r as usize, c as usize) { continue; }
+                let s = sim.boundary[(r * W + c) as usize] as usize;
+                if s == 0 { continue; }
+                let dark = Rgb(cell_colour(s, n).map(|ch| (ch as f32 * DARKEN) as u8));
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        img.put_pixel(c * scale + dx, r * scale + dy, dark);
+                    }
                 }
             }
         }

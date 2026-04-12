@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 // ─── Parameters ──────────────────────────────────────────────────────────────
 
 use std::f64::consts::PI;
+use cpm2d::cellstate::CellState;
 use cpm2d::params::Params;
 use cpm2d::grid::Cpm2d;
 use cpm2d::render::{save_png, console_print};
@@ -57,8 +58,14 @@ fn main() {
         Cpm2d::new(Params::default())
     };
 
+    let start_area = 60i64;
+    let end_area = 200i64;
     let p = sim.p.clone();
     let end_mcs = sim.mcs + p.total_steps;
+    sim.cells = (0..sim.p.n_cells+1)
+        .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter,start_area as i64, (start_area as f64 * 4.0 * PI).sqrt() as i64))
+        .collect();
+
 
     println!(
         "Starting CPM2D  grid={}×{}  cells={}  T={}  MCS={}",
@@ -71,6 +78,15 @@ fn main() {
     while sim.mcs < end_mcs {
         sim.run_mcs();
 
+        if sim.mcs > end_mcs / 2 {
+            let d : f64 = (end_mcs as f64) / 2.0;
+            let t = (sim.mcs as f64  - d) / d;
+            let target_area = (start_area as f64) + ((end_area - start_area) as f64) * t;
+
+            sim.cells = (0..sim.p.n_cells+1)
+                .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter,target_area as i64, (target_area * 4.0 * PI).sqrt() as i64))
+                .collect();
+        }
         if sim.mcs % p.console_every == 0 {
             console_print(&sim);
         }
