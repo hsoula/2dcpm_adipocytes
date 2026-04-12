@@ -5,6 +5,9 @@ use crate::boundary::{build_boundary, pixel_is_boundary};
 use crate::energy::delta_isoperimetric;
 use crate::params::Params;
 use crate::cellstate::CellState;
+use crate::init::{poisson_seeds, voronoi_fill};
+use crate::wall::Wall;
+use crate::fliprecord::FlipRecord;
 use rand::prelude::*;
 use crate::render::arrayvec_neighbours;
 pub const MOORE: [(i32, i32); 8] = [
@@ -25,6 +28,7 @@ pub struct SaveState {
     /// Flat grid, row-major: index = r * grid_w + c
     pub grid: Vec<u32>,
     pub cells:  Vec<CellState>,
+    pub wall: Wall,
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────
@@ -40,11 +44,15 @@ pub struct Cpm2d {
     //pub perimeter: Vec<i64>,
     // new version : target area/perimeter is cell based
     pub cells:   Vec<CellState>,
+    // new version adding; wall
+    pub wall: Wall,
     /// boundary[w*h] with id's k of boundary cells
     pub boundary: Vec<u32>,
-    mcs_size: usize,
+    pub mcs_size: usize,
     pub rng: StdRng,
 }
+
+
 
 impl Cpm2d {
     // ── Construction ─────────────────────────────────────────────────────────
@@ -53,19 +61,21 @@ impl Cpm2d {
         let n = p.n_cells;
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h);
         let cells = (0..n+1)
-            .map(|k| CellState::new(k as u32,p.target_area, p.target_perim))
+            .map(|k| CellState::new(k as u32, 0, 0, p.target_area, p.target_perim))
             .collect();
+        let wall = Wall::new(p.grid_w, p.grid_h, p.wall_inset);
         let mut sim = Self {
             p: p.clone(),
             mcs: 0,
             grid: vec![0u32; p.grid_w * p.grid_h],
             cells : cells,
+            wall: wall,
             boundary: vec![0u32; n + 1],
             mcs_size: mcs_size,
             rng: StdRng::from_entropy()
         };
         fs::create_dir_all(&sim.p.png_dir).expect("cannot create png_dir");
-        sim.place_initial_cells();
+        sim.place_initial_cells_voronoi();
         sim.recompute_stats();
         sim.boundary = build_boundary(&sim.grid, p.grid_w, p.grid_h);
         sim
@@ -81,6 +91,7 @@ impl Cpm2d {
             mcs: s.mcs,
             grid: s.grid,
             cells : s.cells,
+            wall : s.wall,
             boundary: boundary,
             mcs_size: mcs_size,
             rng : StdRng::from_entropy()
@@ -128,9 +139,29 @@ impl Cpm2d {
         }
     }
 
+    pub fn place_initial_cells_voronoi(&mut self) {
+        let W = self.p.grid_w;
+        let H = self.p.grid_h;
+        let min_dist = self.p.poisson_min_dist
+            .max(2.0); // safety floor
+
+        let seeds = poisson_seeds(W, H, min_dist, self.p.n_cells, &self.wall, &mut self.rng);
+
+        if seeds.len() < self.p.n_cells {
+            eprintln!(
+                "Warning: only {} seeds placed (requested {}). \
+             Increase grid size or reduce n_cells/min_dist.",
+                seeds.len(), self.p.n_cells
+            );
+        }
+
+        voronoi_fill(&mut self.grid, W, H, &seeds, &self.wall);
+        // update n_cells to match what was actually placed
+        self.p.n_cells = seeds.len();
+    }
     // ── Statistics ────────────────────────────────────────────────────────────
 
-    fn recompute_stats(&mut self) {
+    pub fn recompute_stats(&mut self) {
         let W = self.p.grid_w;
         let H = self.p.grid_h;
         self.cells.iter_mut().for_each(|c| {c.area=0; c.perimeter=0;});
@@ -143,6 +174,7 @@ impl Cpm2d {
                     for (dr, dc) in VON_NEUMANN {
                         let nr = r as i32 + dr;
                         let nc = c as i32 + dc;
+                        // TODO: make a method for outside
                         let nb = if nr < 0 || nr >= H as i32 || nc < 0 || nc >= W as i32 {
                             0usize
                         } else {
@@ -213,18 +245,32 @@ impl Cpm2d {
 
     fn delta_h_area(&self, s_old: u32, s_new: u32) -> f64 {
         let lam = self.p.lambda_area;
-        let at_old = self.cells[s_old as usize].target_area;
-        let at_new = self.cells[s_new as usize].target_area;
-
+        let at  = self.p.target_area;
         let mut dh = 0.0f64;
+
         if s_old > 0 {
             let a = self.cells[s_old as usize].area;
-            dh += lam * ((a - 1 - at_old).pow(2) - (a - at_old).pow(2)) as f64;
+            let target = self.cells[s_old as usize].target_area;
+            dh += lam * ((a - 1 - target).pow(2) - (a - target).pow(2)) as f64;
         }
+
         if s_new > 0 {
-            let a = self.cells[s_new as usize].area;
-            dh += lam * ((a + 1 - at_new).pow(2) - (a - at_new).pow(2)) as f64;
+            let a      = self.cells[s_new as usize].area;
+            let target = self.cells[s_new as usize].target_area;
+
+            // Cap the deficit: a cell more than `area_deficit_cap` pixels below
+            // its target is treated as if it were exactly `area_deficit_cap` below.
+            // This bounds the maximum negative dH contribution from area gain.
+            let cap    = 20000; //self.p.area_deficit_cap as i64;  // e.g. 10
+            let deficit = (target - a).min(cap);          // capped deficit
+            let a_eff   = target - deficit;               // effective area for energy calc
+
+            dh += lam * ((a_eff + 1 - target).pow(2) - (a_eff - target).pow(2)) as f64;
+            // = lam * (2*(a_eff - target) + 1)
+            // = lam * (-2*deficit + 1)
+            // minimum value = lam * (-2*cap + 1)  — bounded regardless of actual gap
         }
+
         dh
     }
 
@@ -276,6 +322,144 @@ impl Cpm2d {
         dh
     }
 
+    pub fn attempt_instrumented(&mut self, attempt: usize) -> Option<FlipRecord> {
+        let W = self.p.grid_w;
+        let H = self.p.grid_h;
+        let T = self.p.temperature;
+
+        let r     = self.rng.gen_range(0..H);
+        let c     = self.rng.gen_range(0..W);
+        let s_old = self.grid[r * W + c];
+
+        if self.wall.contains(r, c) { return None; }
+
+        let candidates = arrayvec_neighbours(r, c, W, H, &self.grid, s_old);
+        if candidates.is_empty() { return None; }
+
+        let s_new = candidates[self.rng.gen_range(0..candidates.len())];
+
+        // ── Compute each term separately ─────────────────────────────────────
+        let dh_contact  = self.delta_h_contact(r, c, s_old, s_new);
+        let dh_perim    = self.delta_h_perim(r, c, s_old, s_new);
+
+        let (dh_area_old, dh_area_new) = self.delta_h_area_split(s_old, s_new);
+        let dh_area     = dh_area_old + dh_area_new;
+
+        let old_area_f  = self.cells[s_old as usize].area as f64;
+        let old_perim_f = self.cells[s_old as usize].perimeter as f64;
+        let new_area_f  = self.cells[s_new as usize].area as f64;
+        let new_perim_f = self.cells[s_new as usize].perimeter as f64;
+        let dh_iso      = delta_isoperimetric(old_area_f, old_perim_f,
+                                              new_area_f, new_perim_f,
+                                              self.p.lambda_iso);
+
+        let dh_total    = dh_contact + dh_area + dh_perim + dh_iso;
+
+        let accepted    = dh_total <= 0.0
+            || self.rng.gen_range(0f64..1f64) < (-dh_total / T).exp();
+
+        if accepted {
+            self.grid[r * W + c] = s_new;
+            if s_old > 0 { self.cells[s_old as usize].area -= 1; }
+            if s_new > 0 { self.cells[s_new as usize].area += 1; }
+            self.update_perimeter_local(r, c, s_old, s_new);
+            self.update_boundary_local(r, c);
+        }
+
+        let threshold = self.p.j_cell_cell * 2.0;
+
+        Some(FlipRecord {
+            attempt,
+            r, c,
+            s_old, s_new,
+            dh_contact,
+            dh_area_old,
+            dh_area_new,
+            dh_perim,
+            dh_iso,
+            dh_total,
+            area_old:    self.cells[s_old as usize].area,
+            target_old:  self.cells[s_old as usize].target_area,
+            area_new:    self.cells[s_new as usize].area,
+            target_new:  self.cells[s_new as usize].target_area,
+            accepted,
+            // diagnostic flags
+            area_dominated:   dh_area.abs() > (dh_contact + dh_perim).abs(),
+            negative_runaway: dh_total < -threshold,
+        })
+    }
+
+    /// Split delta_h_area into s_old and s_new contributions separately
+    fn delta_h_area_split(&self, s_old: u32, s_new: u32) -> (f64, f64) {
+        let lam = self.p.lambda_area;
+        let dh_old = if s_old > 0 {
+            let c = &self.cells[s_old as usize];
+            lam * ((c.area - 1 - c.target_area).pow(2)
+                - (c.area     - c.target_area).pow(2)) as f64
+        } else { 0.0 };
+
+        let dh_new = if s_new > 0 {
+            let c = &self.cells[s_new as usize];
+            lam * ((c.area + 1 - c.target_area).pow(2)
+                - (c.area     - c.target_area).pow(2)) as f64
+        } else { 0.0 };
+
+        (dh_old, dh_new)
+    }
+    /// Returns true if removing pixel (r,c) from its current cell would
+    /// disconnect that cell. Uses a local BFS in the Moore neighbourhood.
+    fn would_disconnect(&self, r: usize, c: usize, s: u32) -> bool {
+        let W = self.p.grid_w;
+        let H = self.p.grid_h;
+
+        // Collect Von Neumann neighbours that belong to the same cell
+        let same_neighbours: Vec<(usize, usize)> = VON_NEUMANN.iter()
+            .filter_map(|(dr, dc)| {
+                let nr = r as i32 + dr;
+                let nc = c as i32 + dc;
+                if nr < 0 || nr >= H as i32 || nc < 0 || nc >= W as i32 {
+                    return None;
+                }
+                let nr = nr as usize;
+                let nc = nc as usize;
+                if self.grid[nr * W + nc] == s { Some((nr, nc)) } else { None }
+            })
+            .collect();
+
+        // 0 or 1 same-cell neighbour → removing (r,c) cannot disconnect
+        if same_neighbours.len() <= 1 { return false; }
+
+        // BFS from first neighbour, restricted to Moore neighbourhood of (r,c),
+        // excluding (r,c) itself, only through pixels of cell s
+        // If all same_neighbours are reachable → still connected
+        let mut visited = std::collections::HashSet::new();
+        let mut queue   = std::collections::VecDeque::new();
+
+        visited.insert(same_neighbours[0]);
+        queue.push_back(same_neighbours[0]);
+
+        // The local arena: Moore neighbourhood of (r,c) excluding (r,c)
+        // BFS can leave this area — we want full reachability through s
+        // but restrict to a small radius for performance (radius 3 is enough in practice)
+        while let Some((qr, qc)) = queue.pop_front() {
+            for (dr, dc) in VON_NEUMANN {
+                let nr = qr as i32 + dr;
+                let nc = qc as i32 + dc;
+                if nr < 0 || nr >= H as i32 || nc < 0 || nc >= W as i32 { continue; }
+                let nr = nr as usize;
+                let nc = nc as usize;
+                if (nr, nc) == (r, c) { continue; }       // skip the pixel being removed
+                if self.grid[nr * W + nc] != s { continue; }
+                if visited.insert((nr, nc)) {
+                    queue.push_back((nr, nc));
+                }
+            }
+        }
+
+        // If any same-neighbour was not reached → disconnected
+        same_neighbours.iter().any(|p| !visited.contains(p))
+    }
+
     // ── Monte Carlo step ──────────────────────────────────────────────────────
 
     fn attempt(&mut self) {
@@ -285,6 +469,9 @@ impl Cpm2d {
 
         let r = self.rng.gen_range(0..H);
         let c = self.rng.gen_range(0..W);
+        // skip wall pixels and out-of-bounds
+        if self.wall.contains(r, c) { return; }
+
         let s_old = self.grid[r * W + c];
         let old_area  = self.cells[s_old as usize].area as f64;
         let old_perim  = self.cells[s_old as usize].perimeter as f64;
@@ -296,6 +483,8 @@ impl Cpm2d {
         // Pick one at random
         let idx = self.rng.gen_range(0..candidates.len());
         let s_new = candidates[idx];
+
+        //if s_old > 0 && self.would_disconnect(r, c, s_old) { return; }
 
         let new_area  = self.cells[s_new as usize].area as f64;
         let new_perim  = self.cells[s_new as usize].perimeter as f64;
@@ -331,52 +520,30 @@ impl Cpm2d {
         let W = self.p.grid_w as i32;
         let H = self.p.grid_h as i32;
 
-        // Pixels whose perimeter count might have changed: (r,c) + 4-neighbours
-        let mut affected: Vec<(usize, usize)> = vec![(r, c)];
-        for (dr, dc) in VON_NEUMANN {
-            let nr = r as i32 + dr;
-            let nc = c as i32 + dc;
-            if nr >= 0 && nr < H && nc >= 0 && nc < W {
-                affected.push((nr as usize, nc as usize));
-            }
-        }
-
-        for (rr, cc) in affected {
-            let s = self.grid[rr * self.p.grid_w + cc] as usize;
+        // Recompute full perimeter for s_old and s_new from scratch.
+        // Only called on accept so this is O(W*H) — acceptable for correctness.
+        // Optimise later if profiling shows it matters.
+        for s in [s_old, s_new] {
             if s == 0 { continue; }
-
-            // The "old" sigma at (r,c) for the purposes of counting edges
-            // For the flipped pixel itself: old was s_old; for neighbours: unchanged.
-            let old_at_flip = if (rr, cc) == (r, c) { s_old } else { s as u32 };
-
-            let mut old_p = 0i64;
-            let mut new_p = 0i64;
-            for (dr, dc) in VON_NEUMANN {
-                let nr2 = rr as i32 + dr;
-                let nc2 = cc as i32 + dc;
-                let nb_old = if nr2 < 0 || nr2 >= H || nc2 < 0 || nc2 >= W {
-                    0u32
-                } else if (nr2 as usize, nc2 as usize) == (r, c) {
-                    s_old   // what was there before the flip
-                } else {
-                    self.grid[nr2 as usize * self.p.grid_w + nc2 as usize]
-                };
-                let nb_new = if nr2 < 0 || nr2 >= H || nc2 < 0 || nc2 >= W {
-                    0u32
-                } else {
-                    self.grid[nr2 as usize * self.p.grid_w + nc2 as usize]
-                };
-                if nb_old != old_at_flip { old_p += 1; }
-                if nb_new != s as u32    { new_p += 1; }
+            let mut p = 0i64;
+            for rr in 0..H as usize {
+                for cc in 0..W as usize {
+                    if self.grid[rr * self.p.grid_w + cc] != s { continue; }
+                    for (dr, dc) in VON_NEUMANN {
+                        let nr = rr as i32 + dr;
+                        let nc = cc as i32 + dc;
+                        let nb = if nr < 0 || nr >= H || nc < 0 || nc >= W {
+                            0u32
+                        } else {
+                            self.grid[nr as usize * self.p.grid_w + nc as usize]
+                        };
+                        if nb != s { p += 1; }
+                    }
+                }
             }
-
-            let diff = new_p - old_p;
-            if diff != 0 {
-                self.cells[s].perimeter += diff;
-            }
+            self.cells[s as usize].perimeter = p;
         }
     }
-
     // ── Serialisation ─────────────────────────────────────────────────────────
 
     pub fn save_state(&self, path: Option<&str>) {
@@ -387,6 +554,7 @@ impl Cpm2d {
             params: self.p.clone(),
             grid: self.grid.clone(),
             cells: self.cells.clone(),
+            wall : self.wall.clone(),
         };
         let json = serde_json::to_string_pretty(&s).expect("serialisation failed");
         fs::write(path, json).unwrap_or_else(|e| eprintln!("JSON save error: {e}"));
