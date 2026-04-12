@@ -2,15 +2,18 @@ import numpy as np
 import pandas as pd 
 import matplotlib.pyplot as plt 
 
-data_dir = "../results"
+data_dir = "../results/lambdas"
 
-df = pd.read_csv(f'{data_dir}/sweep4.csv')
-df.drop(columns='lambda_area', inplace=True)
-df = df[df['lambda_iso']==0]
+df = pd.read_csv(f'{data_dir}/out.csv')
+df['iso'] = df['perimeter']**2/df['area']
+
+dtfmean = df.groupby(['lambda_area','lambda_perimeter','lambda_iso','target_area','n_cells']).mean()
+
+
 perims = np.unique(df['lambda_perimeter'])
 
 dtfmean = df.groupby(['lambda_perimeter']).mean()
-dtfmean['iso'] = dtfmean['perimeter']**2/dtfmean['area']
+
 plt.scatter(dtfmean.index,dtfmean['perimeter'])
 #plt.plot(dtfmean.index, 4*np.pi + 0 * dtfmean.index)
 plt.savefig('perim.pdf')
