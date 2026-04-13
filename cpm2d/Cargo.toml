@@ -31,6 +31,10 @@ path = "src/bin/debug_mcs.rs"
 name = "simulate_live"
 path = "src/bin/simulate_live.rs"
 
+[[bin]]
+name = "extract_demography"
+path = "src/bin/extract_demography.rs"
+
 [dependencies]
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }

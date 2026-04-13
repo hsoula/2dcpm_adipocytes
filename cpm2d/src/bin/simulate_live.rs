@@ -3,16 +3,18 @@
 //! Usage example:
 //!   cargo run --bin simulate_live -- \
 //!     --grid-w 120 --grid-h 120 --n-cells 16 \
-//!     --growth-rate 1 --death-prob 0.002 --birth-prob 0.05 \
+//!     --growth-rate 0.1 --death-prob 0.002 --birth-prob 0.05 \
 //!     --steps 5000 --out-dir data/live/
 
 use std::{f64, fs};
+use std::io::Write as IoWrite;
 use std::path::Path;
 use clap::Parser;
 use std::f64::consts::PI;
 use cpm2d::params::Params;
 use cpm2d::grid::Cpm2d;
 use cpm2d::render::{save_png, console_print};
+use cpm2d::dynamics::EventKind;
 
 #[derive(Parser)]
 struct Cli {
@@ -33,7 +35,7 @@ struct Cli {
 
     // Demography
     /// Target area added per MCS to each living cell (pixels/step)
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "0.1")]
     growth_rate: f64,
     /// Per-cell probability of dying each MCS
     #[arg(long, default_value = "0.002")]
@@ -73,6 +75,7 @@ fn main() {
     fs::create_dir_all(&out_dir).unwrap();
     fs::create_dir_all(format!("{}/frames/", out_dir)).unwrap();
     fs::create_dir_all(format!("{}/png/", out_dir)).unwrap();
+    fs::create_dir_all(format!("{}/events/", out_dir)).unwrap();
 
     let target_perimeter = (cli.target_area as f64 * 4.0 * PI).sqrt() as i64;
 
@@ -80,23 +83,23 @@ fn main() {
         Cpm2d::load_state(&cli.load)
     } else {
         let mut p = Params::default();
-        p.grid_w           = cli.grid_w;
-        p.grid_h           = cli.grid_h;
-        p.n_cells          = cli.n_cells;
-        p.lambda_area      = cli.la;
-        p.lambda_perim     = cli.lp;
-        p.lambda_iso       = cli.li;
-        p.target_area      = cli.target_area;
-        p.target_perim     = target_perimeter;
-        p.wall_inset       = cli.wall_inset;
-        p.total_steps      = cli.steps;
-        p.save_every       = cli.save_every;
-        p.console_every    = cli.save_every;
-        p.png_every        = cli.save_every;
-        p.frames_dir       = out_dir.clone();
-        p.growth_rate      = cli.growth_rate;
-        p.death_prob       = cli.death_prob;
-        p.birth_prob       = cli.birth_prob;
+        p.grid_w               = cli.grid_w;
+        p.grid_h               = cli.grid_h;
+        p.n_cells              = cli.n_cells;
+        p.lambda_area          = cli.la;
+        p.lambda_perim         = cli.lp;
+        p.lambda_iso           = cli.li;
+        p.target_area          = cli.target_area;
+        p.target_perim         = target_perimeter;
+        p.wall_inset           = cli.wall_inset;
+        p.total_steps          = cli.steps;
+        p.save_every           = cli.save_every;
+        p.console_every        = cli.save_every;
+        p.png_every            = cli.save_every;
+        p.frames_dir           = out_dir.clone();
+        p.growth_rate          = cli.growth_rate;
+        p.death_prob           = cli.death_prob;
+        p.birth_prob           = cli.birth_prob;
         p.death_area_threshold = cli.death_area_threshold;
         Cpm2d::new(p, cli.voronoi_start)
     };
@@ -106,12 +109,18 @@ fn main() {
 
     println!(
         "simulate_live  grid={}×{}  cells={}  T={:.2}  steps={}\n\
-         growth_rate={:.2}  death_prob={:.4}  birth_prob={:.4}  death_threshold={}\n\
+         growth_rate={:.3}  death_prob={:.4}  birth_prob={:.4}  death_threshold={}\n\
          save_every={}  png_every={}  console_every={}",
         sim.p.grid_w, sim.p.grid_h, sim.p.n_cells, sim.p.temperature, cli.steps,
         sim.p.growth_rate, sim.p.death_prob, sim.p.birth_prob, sim.p.death_area_threshold,
         cli.save_every, png_every, console_every,
     );
+
+    // Open events CSV (append-friendly: truncate at start of new run)
+    let events_path = format!("{}/events.csv", out_dir);
+    let mut events_csv = fs::File::create(&events_path).expect("cannot create events.csv");
+    writeln!(events_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
+        .expect("cannot write events.csv header");
 
     // MCS 0 snapshot
     console_print(&sim);
@@ -119,7 +128,28 @@ fn main() {
 
     while sim.mcs < cli.steps {
         sim.run_mcs();
-        sim.step_demography();
+        let dem_events = sim.step_demography();
+
+        // ── Handle demography events ─────────────────────────────────────────
+        if !dem_events.is_empty() {
+            for ev in &dem_events {
+                let kind_str = match ev.kind {
+                    EventKind::Birth => "birth",
+                    EventKind::Death => "death",
+                };
+                writeln!(
+                    events_csv,
+                    "{},{},{},{},{},{}",
+                    kind_str, ev.mcs, ev.sigma,
+                    ev.area_at_event, ev.birth_mcs, ev.lifetime_mcs
+                ).expect("cannot write event row");
+
+                // PNG snapshot for every event
+                let tag = format!("{}/{}/event_{}_{}_mcs{:06}_s{}.png",
+                    out_dir, "events", kind_str, ev.sigma, ev.mcs, ev.sigma);
+                save_png(&sim, Some(&tag));
+            }
+        }
 
         let is_last = sim.mcs + 1 == cli.steps;
 
@@ -140,5 +170,5 @@ fn main() {
         }
     }
 
-    println!("\nDone. Final MCS={}", sim.mcs);
+    println!("\nDone. Final MCS={}  events log → {}", sim.mcs, events_path);
 }
