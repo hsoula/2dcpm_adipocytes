@@ -6,9 +6,26 @@ edition = "2024"
 [[bin]]
 name = "simulate"
 path = "src/bin/simulate.rs"
+
+[[bin]]
+name = "sweep"
+path = "src/bin/sweep.rs"
+
+[[bin]]
+name = "sweep_rand_size"
+path = "src/bin/sweep_rand_size.rs"
+
 [[bin]]
 name = "analyse"
 path = "src/bin/analyse.rs"
+
+[[bin]]
+name = "analyze_sweep"
+path = "src/bin/analyze_sweep.rs"
+
+[[bin]]
+name = "debug_mcs"
+path = "src/bin/debug_mcs.rs"
 
 [dependencies]
 rand = "0.8"
