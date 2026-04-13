@@ -13,7 +13,7 @@ cargo run --release --bin sweep -- --n-cells 10 --la 0.5,2.0,0.5 --lp 0.05,0.2,0
 
 ## Sweep with normally-distributed cell sizes (replaces simulate_diff_size)
 cargo run --release --bin sweep_rand_size -- --la 0.5,2.0,0.5 --lp 0.05,0.2,0.05 --li 0.0,0.1,0.1 --steps 500 --size-mean 10 --size-std 7 --out-dir sweep_rand
-
+    
 ## Analysis (replaces analyze_1cell / analyze_4cells / analyze_lambdas)
 cargo run --release --bin analyze_sweep -- "sweep_out/frames/states_mcs*.json" --out results/sweep.csv
 

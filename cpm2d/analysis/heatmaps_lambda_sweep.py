@@ -38,7 +38,7 @@ parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--csv", default="../results/sweep.csv",
                     help="Path to the analyze_sweep CSV output")
-parser.add_argument("--out", default="../figs/heatmaps",
+parser.add_argument("--out", default="results/figs/heatmaps",
                     help="Output directory for saved figures")
 parser.add_argument("--fmt", default="pdf", choices=["pdf", "png", "svg"],
                     help="Figure file format")
