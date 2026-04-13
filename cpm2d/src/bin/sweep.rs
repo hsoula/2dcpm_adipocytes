@@ -1,21 +1,15 @@
-//! cargo run --bin sweep -- --la 0.5,1.0,2.0 --lp 0.05,0.1,0.2 --li 0.0,0.1
-// cargo run --release --bin analyze_1cell -- \
-//     --la 0.5,2.0,0.5 \
-//     --lp 0.05,0.2,0.05 \
-//     --li 0.0,0.1,0.1 \
-//     --steps 500 \
-//     --save-every 50
+//! Lambda parameter sweep — replaces simulate_1cell / simulate_4cells.
+//!
+//! cargo run --release --bin sweep -- \
+//!     --la 0.5,2.0,0.5 --lp 0.05,0.2,0.05 --li 0.0,0.1,0.1 \
+//!     --n-cells 10 --steps 2000 --save-every 1000 --out-dir sweep_out
 
-
+use std::f64::consts::PI;
 use clap::Parser;
 use cpm2d::{grid::Cpm2d, params::Params};
 use std::fs;
 use std::str::FromStr;
-use rand::prelude::*;
 use cpm2d::render::save_png;
-use rand_distr::{Distribution, Normal};
-use rand_distr::num_traits::Pow;
-use cpm2d::cellstate::CellState;
 
 /// Parses "min,max,step" from the command line.
 #[derive(Debug, Clone)]
@@ -29,7 +23,7 @@ impl LambdaRange {
     pub fn values(&self) -> Vec<f64> {
         let mut v = Vec::new();
         let mut x = self.min;
-        while x <= self.max + 1e-9 {   // epsilon avoids float rounding cutting last value
+        while x <= self.max + 1e-9 {
             v.push(x);
             x += self.step;
         }
@@ -50,33 +44,57 @@ impl FromStr for LambdaRange {
         Ok(Self { min: min?, max: max?, step: step? })
     }
 }
+
 #[derive(Parser)]
 struct Cli {
+    #[arg(long, default_value = "60")]
+    grid_w: usize,
+    #[arg(long, default_value = "60")]
+    grid_h: usize,
     #[arg(long)]
-    la: LambdaRange,   // --la 0.5,2.0,0.5
+    la: LambdaRange,
     #[arg(long)]
-    lp: LambdaRange,   // --lp 0.05,0.2,0.05
+    lp: LambdaRange,
     #[arg(long)]
-    li: LambdaRange,   // --li 0.0,0.1,0.1
-    #[arg(long, default_value = "sweep_states")]
+    li: LambdaRange,
+    #[arg(long, default_value = "simulate/data")]
     out_dir: String,
-    #[arg(long, default_value = "300")]
+    #[arg(long, default_value = "2000")]
     steps: usize,
-    #[arg(long, default_value = "5000")]
+    #[arg(long, default_value = "1000")]
     save_every: usize,
+    #[arg(long, default_value = "10")]
+    n_runs: usize,
+    #[arg(long, default_value = "10")]
+    n_cells: usize,
+    #[arg(long, default_value = "false")]
+    voronoi_start: bool,
+    #[arg(long, default_value = "0")]
+    wall_inset: usize,
+    #[arg(long, default_value = "200")]
+    target_area: i64,
 }
+
 fn lambda_tag(la: f64, lp: f64, li: f64) -> String {
-    // e.g. "1.00_0.10_0.05"  — fixed 2 decimal places, unambiguous in filenames
     format!("{:.2}_{:.2}_{:.2}", la, lp, li)
+}
+
+fn name_tag(voronoi_start: bool, target_area: i64, nb_cells: usize) -> String {
+    let s = if voronoi_start { "1" } else { "0" };
+    format!("{}_{}_{}", s, target_area, nb_cells)
 }
 
 fn main() {
     let cli = Cli::parse();
-    fs::create_dir_all(&cli.out_dir).unwrap();
     let la_vals = cli.la.values();
     let lp_vals = cli.lp.values();
     let li_vals = cli.li.values();
-    let nrun = 10;
+    let target_perimeter = (cli.target_area as f64 * 4.0 * PI).sqrt() as i64;
+
+    fs::create_dir_all(&cli.out_dir).unwrap();
+    fs::create_dir_all(format!("{}/frames/", cli.out_dir)).unwrap();
+    fs::create_dir_all(format!("{}/png/", cli.out_dir)).unwrap();
+
     let mut combos: Vec<(f64, f64, f64)> = Vec::new();
     for la in la_vals.iter().copied() {
         for lp in lp_vals.iter().copied() {
@@ -85,65 +103,46 @@ fn main() {
             }
         }
     }
-    println!("{} combinations × {} steps", combos.len(), cli.steps);
-
+    println!("{} combinations × {} steps × {} runs", combos.len(), cli.steps, cli.n_runs);
 
     for (la, lp, li) in &combos {
         let tag = lambda_tag(*la, *lp, *li);
 
-
-        for run in 0..nrun {
+        for run in 0..cli.n_runs {
             println!("  running λ={} run {}", tag, run);
             let mut p = Params::default();
-
-
-
-            p.grid_w =100;
-            p.grid_h = 100;
-            p.temperature = 10f64;
+            p.grid_w = cli.grid_w;
+            p.grid_h = cli.grid_h;
             p.lambda_area = *la;
             p.lambda_perim = *lp;
             p.lambda_iso = *li;
             p.total_steps = cli.steps;
-            p.n_cells = 64;
-            p.png_every = usize::MAX;   // suppress PNG during sweep
+            p.n_cells = cli.n_cells;
+            p.wall_inset = cli.wall_inset;
+            p.target_area = cli.target_area;
+            p.target_perim = target_perimeter;
+            p.png_every = usize::MAX;
             p.console_every = usize::MAX;
-            p.save_every = usize::MAX;   // we control saving ourselves
-            p.wall_inset =0;
-            let mean  = 10f64;
-            let std  = 7f64;
-            let voronoi = true;
+            p.save_every = usize::MAX;
 
-            let mut sim = Cpm2d::new(p, voronoi);
-            let areas : Vec<f64>= (0..sim.p.n_cells + 1)
-                .map(|_| sim.rng.gen_range(mean - std..mean + std))
-                .collect();
-            sim.cells = (0..sim.p.n_cells + 1)
-                .map(|k| CellState::new(k as u32, sim.cells[k].area, sim.cells[k].perimeter, areas[k].pow(2) as i64, (areas[k].pow(2) as f64* 4.0).sqrt() as i64))
-                .collect();
+            let mut sim = Cpm2d::new(p, cli.voronoi_start);
+            let name = name_tag(cli.voronoi_start, cli.target_area, cli.n_cells);
+
             for mcs in 0..cli.steps {
                 sim.run_mcs();
 
                 let should_save = cli.save_every > 0 && (mcs + 1) % cli.save_every == 0;
                 let is_last = mcs + 1 == cli.steps;
                 if should_save || is_last {
-                    // pattern: states_mcs000300_1.00_0.10_0.05.json
-                    let fname = format!(
-                        "{}/states_mcs{:06}_{}_{}.json",
-                        cli.out_dir,
-                        sim.mcs,
-                        tag,
-                        run
+                    let file_name = format!(
+                        "{}/frames/states_mcs{:06}_{}_{}_{}.json",
+                        cli.out_dir, sim.mcs, tag, name, run
                     );
                     let png_name = format!(
-                        "{}/png/states_mcs{:06}_{}_{}.png",
-                        cli.out_dir,
-                        sim.mcs,
-                        tag,
-                        run
+                        "{}/png/states_mcs{:06}_{}_{}_{}.png",
+                        cli.out_dir, sim.mcs, tag, name, run
                     );
-
-                    sim.save_state(Some(&fname));
+                    sim.save_state(Some(&file_name));
                     save_png(&sim, Some(&png_name));
                 }
             }
