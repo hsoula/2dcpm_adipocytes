@@ -30,6 +30,16 @@ pub struct Params {
     pub mcs_per_step: Option<usize>,
     pub total_steps: usize,
 
+    // Demography (growth / death / birth)
+    /// Target area increase per MCS for living cells (pixels/step)
+    pub growth_rate: f64,
+    /// Per-cell probability of dying each MCS
+    pub death_prob: f64,
+    /// Probability of one birth attempt per MCS
+    pub birth_prob: f64,
+    /// Clean up a dying cell when its actual area drops below this
+    pub death_area_threshold: i64,
+
     // Output
     pub png_dir: String,
     pub frames_dir: String,
@@ -57,6 +67,10 @@ impl Default for Params {
             temperature: 2.0,
             mcs_per_step: None,
             total_steps: 2000,
+            growth_rate: 0.0,
+            death_prob: 0.0,
+            birth_prob: 0.0,
+            death_area_threshold: 4,
             png_dir: "frames".to_string(),
             frames_dir: "states".to_string(),
             png_every: 10,
