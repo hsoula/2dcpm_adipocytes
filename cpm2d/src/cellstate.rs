@@ -13,10 +13,13 @@ pub struct CellState {
     pub alive: bool,
     /// True = shrinking toward removal (target_area set to 0)
     pub dying: bool,
+    /// MCS at which this cell was born (0 for initial cells)
+    #[serde(default)]
+    pub birth_mcs: usize,
 }
 
 impl CellState {
-    pub fn new(id: u32, area: i64, perimeter:i64, target_area: i64, target_perimeter: i64 ) -> Self {
-        Self { id, area, perimeter, target_area, target_perimeter, alive: true, dying: false }
+    pub fn new(id: u32, area: i64, perimeter: i64, target_area: i64, target_perimeter: i64) -> Self {
+        Self { id, area, perimeter, target_area, target_perimeter, alive: true, dying: false, birth_mcs: 0 }
     }
 }

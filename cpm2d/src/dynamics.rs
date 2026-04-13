@@ -9,6 +9,10 @@
 //!     is freed.
 //!   - With probability `birth_prob` a new 2×2 cell is placed in a free
 //!     medium region; dead slots are reused before the cells vec is extended.
+//!
+//! `step_demography` returns a `Vec<DemographyEvent>` — one entry per birth or
+//! confirmed death that occurred this MCS.  The caller can use this to write an
+//! event log without re-scanning the cell list.
 
 use std::f64::consts::PI;
 use rand::Rng;
@@ -16,15 +20,41 @@ use crate::boundary::build_boundary;
 use crate::cellstate::CellState;
 use crate::grid::Cpm2d;
 
+// ── Event types ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum EventKind {
+    Birth,
+    Death,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DemographyEvent {
+    pub kind:         EventKind,
+    pub sigma:        u32,
+    pub mcs:          usize,
+    /// Actual area of the cell when the event fired
+    pub area_at_event: i64,
+    /// MCS when this cell was born (same as mcs for births)
+    pub birth_mcs:    usize,
+    /// mcs - birth_mcs  (0 for births)
+    pub lifetime_mcs: usize,
+}
+
+// ── Cpm2d impl ────────────────────────────────────────────────────────────────
+
 impl Cpm2d {
     // ── Public entry point ────────────────────────────────────────────────────
 
     /// Run one demography step.  Call after `run_mcs`.
-    pub fn step_demography(&mut self) {
+    /// Returns all birth and death events that occurred this step.
+    pub fn step_demography(&mut self) -> Vec<DemographyEvent> {
+        let mut events = Vec::new();
         self.grow_cells();
         self.maybe_kill_cells();
-        self.sweep_dead_cells();
-        self.maybe_birth_cell();
+        self.sweep_dead_cells(&mut events);
+        self.maybe_birth_cell(&mut events);
+        events
     }
 
     // ── Growth ────────────────────────────────────────────────────────────────
@@ -48,7 +78,6 @@ impl Cpm2d {
     fn maybe_kill_cells(&mut self) {
         let prob = self.p.death_prob;
         if prob <= 0.0 { return; }
-        // collect indices to kill so we don't borrow rng while iterating cells
         let to_kill: Vec<usize> = (1..self.cells.len())
             .filter(|&i| {
                 let c = &self.cells[i];
@@ -64,29 +93,40 @@ impl Cpm2d {
 
     /// Remove dying cells whose actual area has dropped below
     /// `death_area_threshold`: zero all their grid pixels and free the slot.
-    fn sweep_dead_cells(&mut self) {
+    /// Appends a Death event for each cell removed.
+    fn sweep_dead_cells(&mut self, events: &mut Vec<DemographyEvent>) {
         let threshold = self.p.death_area_threshold;
-        let to_clear: Vec<u32> = self.cells.iter()
+        let mcs = self.mcs;
+
+        let to_clear: Vec<(u32, i64, usize)> = self.cells.iter()
             .filter(|c| c.id > 0 && c.dying && c.area < threshold)
-            .map(|c| c.id)
+            .map(|c| (c.id, c.area, c.birth_mcs))
             .collect();
 
         if to_clear.is_empty() { return; }
 
-        for sigma in &to_clear {
+        for &(sigma, area, birth_mcs) in &to_clear {
             for px in self.grid.iter_mut() {
-                if *px == *sigma { *px = 0; }
+                if *px == sigma { *px = 0; }
             }
-            let c = &mut self.cells[*sigma as usize];
+            let c = &mut self.cells[sigma as usize];
             c.alive = false;
             c.dying = false;
             c.area = 0;
             c.perimeter = 0;
             c.target_area = 0;
             c.target_perimeter = 0;
+
+            events.push(DemographyEvent {
+                kind: EventKind::Death,
+                sigma,
+                mcs,
+                area_at_event: area,
+                birth_mcs,
+                lifetime_mcs: mcs.saturating_sub(birth_mcs),
+            });
         }
 
-        // Rebuild stats and boundary after bulk grid edits
         self.recompute_stats();
         self.boundary = build_boundary(&self.grid, self.p.grid_w, self.p.grid_h);
     }
@@ -94,8 +134,8 @@ impl Cpm2d {
     // ── Birth ─────────────────────────────────────────────────────────────────
 
     /// With probability `birth_prob`, place a new 2×2 cell in a free medium
-    /// spot and assign it a sigma from a dead slot (or a new slot).
-    fn maybe_birth_cell(&mut self) {
+    /// spot.  Appends a Birth event on success.
+    fn maybe_birth_cell(&mut self, events: &mut Vec<DemographyEvent>) {
         let prob = self.p.birth_prob;
         if prob <= 0.0 { return; }
         if !self.rng.gen_bool(prob.min(1.0)) { return; }
@@ -103,7 +143,6 @@ impl Cpm2d {
         let W = self.p.grid_w;
         let H = self.p.grid_h;
 
-        // Collect top-left corners of free 2×2 blocks (not wall, all medium)
         let mut free: Vec<(usize, usize)> = Vec::new();
         for r in 0..H.saturating_sub(1) {
             for c in 0..W.saturating_sub(1) {
@@ -126,7 +165,6 @@ impl Cpm2d {
         let idx = self.rng.gen_range(0..free.len());
         let (br, bc) = free[idx];
 
-        // Find a dead slot (id > 0, !alive) or push a new one
         let sigma: u32 = self.cells.iter()
             .position(|c| c.id > 0 && !c.alive)
             .map(|i| i as u32)
@@ -138,29 +176,37 @@ impl Cpm2d {
 
         let ta = self.p.target_area;
         let tp = self.p.target_perim;
+        let mcs = self.mcs;
         {
             let cell = &mut self.cells[sigma as usize];
             cell.alive = true;
             cell.dying = false;
             cell.target_area = ta;
             cell.target_perimeter = tp;
+            cell.birth_mcs = mcs;
         }
 
-        // Place 2×2 pixels
         self.grid[br*W+bc]       = sigma;
         self.grid[(br+1)*W+bc]   = sigma;
         self.grid[br*W+bc+1]     = sigma;
         self.grid[(br+1)*W+bc+1] = sigma;
 
-        // Update stats and boundary for the new cell and its neighbourhood
         self.recompute_stats();
         self.boundary = build_boundary(&self.grid, self.p.grid_w, self.p.grid_h);
+
+        events.push(DemographyEvent {
+            kind: EventKind::Birth,
+            sigma,
+            mcs,
+            area_at_event: 4,
+            birth_mcs: mcs,
+            lifetime_mcs: 0,
+        });
     }
 
     // ── Convenience ───────────────────────────────────────────────────────────
 
     /// Instantly kill a specific cell (identified by sigma).
-    /// Its pixels are immediately replaced by medium.
     pub fn kill_cell(&mut self, sigma: u32) {
         if sigma == 0 || sigma as usize >= self.cells.len() { return; }
         for px in self.grid.iter_mut() {
