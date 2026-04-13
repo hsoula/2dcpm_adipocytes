@@ -36,6 +36,16 @@ struct CsvRow {
     avg_convexity:     f64,
     convex_hull_area:  f64,
     solidity:          f64,
+    // boundary shape profile
+    flat_edge:         u32,
+    outer_corner:      u32,
+    inner_corner:      u32,
+    concave_bay:       u32,
+    filament_tip:      u32,
+    filament_neck:     u32,
+    other:             u32,
+    total_boundary:    u32,
+    profile_convexity: f64,
 }
 
 /// Extract `(la, lp, li, voronoi, target_area, n_cells, run)` from a filename like
@@ -95,12 +105,15 @@ fn main() {
 
         let sim = Cpm2d::load_state(path);
         let (stats, _edges) = compute_stats(&sim);
-        let boundary     = build_boundary(&sim.grid, sim.p.grid_w, sim.p.grid_h);
-        let convexity    = average_boundary_convexity(&sim, &boundary);
-        let hull_areas   = convex_hull_areas(&sim, &boundary);
-        let _profile     = boundary_profiles(&sim);
+        let boundary   = build_boundary(&sim.grid, sim.p.grid_w, sim.p.grid_h);
+        let convexity  = average_boundary_convexity(&sim, &boundary);
+        let hull_areas = convex_hull_areas(&sim, &boundary);
+        let profiles   = boundary_profiles(&sim);
 
-        for (k, s) in stats.iter().enumerate() {
+        for s in stats.iter() {
+            let id = s.cell_id as usize;
+            let hull = hull_areas[id];
+            let prof = &profiles[id];
             wtr.serialize(CsvRow {
                 mcs:              sim.mcs,
                 lambda_area:      la,
@@ -114,11 +127,18 @@ fn main() {
                 perimeter:        s.perimeter,
                 com_x:            s.com_x,
                 com_y:            s.com_y,
-                avg_convexity:    convexity[k],
-                convex_hull_area: hull_areas[k],
-                solidity: if hull_areas[k] > 0.0 {
-                    sim.cells[k].area as f64 / hull_areas[k]
-                } else { 0.0 },
+                avg_convexity:    convexity[id],
+                convex_hull_area: hull,
+                solidity:         if hull > 0.0 { sim.cells[id].area as f64 / hull } else { 0.0 },
+                flat_edge:        prof.flat_edge,
+                outer_corner:     prof.outer_corner,
+                inner_corner:     prof.inner_corner,
+                concave_bay:      prof.concave_bay,
+                filament_tip:     prof.filament_tip,
+                filament_neck:    prof.filament_neck,
+                other:            prof.other,
+                total_boundary:   prof.total_boundary,
+                profile_convexity: prof.convexity,
             }).unwrap();
         }
         ok += 1;
