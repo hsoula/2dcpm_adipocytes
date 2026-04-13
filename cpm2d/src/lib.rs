@@ -8,3 +8,4 @@ pub mod cellstate;
 pub mod init;
 pub mod wall;
 pub mod fliprecord;
+pub mod dynamics;
