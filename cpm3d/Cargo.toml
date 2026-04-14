@@ -1,0 +1,26 @@
+[package]
+name = "cpm3d"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "simulate"
+path = "src/bin/simulate.rs"
+
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"
+
+[dependencies]
+# Simulation
+rand      = "0.8"
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap      = { version = "4", features = ["derive"] }
+
+# Viewer — pure-Rust GPU stack
+winit     = "0.29"
+wgpu      = "0.20"
+pollster  = "0.3"        # block_on for async wgpu init
+bytemuck  = { version = "1", features = ["derive"] }
+glam      = "0.27"       # Vec3/Mat4/Quat
