@@ -44,10 +44,19 @@ fn main() {
     files.sort();
     println!("Found {} state snapshots", files.len());
 
-    let pop_path = format!("{}/population.csv", cli.out.trim_end_matches('/'));
-    let mut wtr = csv::Writer::from_path(&pop_path).expect("cannot create population.csv");
-    wtr.write_record(&["mcs", "n_living", "n_dying", "n_dead", "total_slots",
-                        "mean_area_living", "mean_target_area_living"])
+    let pop_path   = format!("{}/population.csv",  cli.out.trim_end_matches('/'));
+    let areas_path = format!("{}/cell_areas.csv",  cli.out.trim_end_matches('/'));
+
+    let mut pop_wtr = csv::Writer::from_path(&pop_path).expect("cannot create population.csv");
+    pop_wtr.write_record(&["mcs", "n_living", "n_dying", "n_dead", "total_slots",
+                            "mean_area_living", "mean_target_area_living"])
+        .unwrap();
+
+    // cell_areas.csv — one row per (mcs, cell) for every living or dying cell.
+    // Grouping by mcs gives the area distribution at that snapshot.
+    // Grouping by sigma gives the full area time-course up to and including death.
+    let mut area_wtr = csv::Writer::from_path(&areas_path).expect("cannot create cell_areas.csv");
+    area_wtr.write_record(&["mcs", "sigma", "area", "target_area", "status", "birth_mcs"])
         .unwrap();
 
     for path in &files {
@@ -73,18 +82,34 @@ fn main() {
             living.iter().map(|c| c.target_area as f64).sum::<f64>() / living.len() as f64
         };
 
-        wtr.write_record(&[
+        pop_wtr.write_record(&[
             state.mcs.to_string(),
             living.len().to_string(),
             dying.len().to_string(),
             dead.to_string(),
-            (state.cells.len().saturating_sub(1)).to_string(),  // exclude medium slot
+            (state.cells.len().saturating_sub(1)).to_string(),
             format!("{:.2}", mean_area),
             format!("{:.2}", mean_target),
         ]).unwrap();
+
+        // Per-cell area rows for living and dying cells
+        for c in living.iter().chain(dying.iter()) {
+            let status = if c.dying { "dying" } else { "living" };
+            area_wtr.write_record(&[
+                state.mcs.to_string(),
+                c.id.to_string(),
+                c.area.to_string(),
+                c.target_area.to_string(),
+                status.to_string(),
+                c.birth_mcs.to_string(),
+            ]).unwrap();
+        }
     }
-    wtr.flush().unwrap();
+
+    pop_wtr.flush().unwrap();
+    area_wtr.flush().unwrap();
     println!("Population CSV → {}", pop_path);
+    println!("Cell areas CSV → {}", areas_path);
 
     // ── Copy / verify events.csv ──────────────────────────────────────────────
     let src_events = format!("{}/events.csv", cli.dir.trim_end_matches('/'));
