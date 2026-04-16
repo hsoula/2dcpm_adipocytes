@@ -13,7 +13,10 @@ struct Cli {
     #[arg(long, default_value = "60")]  grid_h: usize,
     #[arg(long, default_value = "60")]  grid_d: usize,
     #[arg(long, default_value = "8")]   n_cells: usize,
+    /// Mean target volume (mu) for all cells.
     #[arg(long, default_value = "125")] target_volume: i64,
+    /// Std-dev of Gaussian noise on initial target volume per cell (0 = deterministic).
+    #[arg(long, default_value = "0.0")] volume_sigma: f64,
     #[arg(long, default_value = "1.0")] lv: f64,
     #[arg(long, default_value = "0.5")] ls: f64,
     #[arg(long, default_value = "0.05")] li: f64,
@@ -40,6 +43,7 @@ fn main() {
         p.lambda_vol    = cli.lv;
         p.lambda_surf   = cli.ls;
         p.lambda_spher  = cli.li;
+        p.volume_sigma  = cli.volume_sigma;
         p.total_steps   = cli.steps;
         p.save_every    = cli.save_every;
         p.png_every     = cli.png_every;
@@ -66,7 +70,7 @@ fn main() {
 
         if cli.png_every > 0 && (sim.mcs % cli.png_every == 0 || is_last) {
             let (w, h, d) = (sim.p.grid_w, sim.p.grid_h, sim.p.grid_d);
-            let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.ppm",
+            let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.png",
                 sim.p.out_dir.trim_end_matches('/'), ax, sim.mcs);
             sim.save_slice_png(0, d / 2, &tag("xy"));
             sim.save_slice_png(1, h / 2, &tag("xz"));

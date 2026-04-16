@@ -32,6 +32,10 @@ pub struct Params {
     pub out_dir:    String,
     pub save_every: usize,
     pub png_every:  usize,   // slice PNGs every N MCS (0 = off)
+
+    /// Std-dev of Gaussian noise applied to each cell's initial target_volume.
+    /// 0.0 = all cells start with the same target_volume.
+    pub volume_sigma: f64,
 }
 
 impl Default for Params {
@@ -51,12 +55,13 @@ impl Default for Params {
             lambda_spher: 0.05,
             j_cell_medium: 8.0,
             j_cell_cell:  10.0,
-            temperature: 2.0,
+            temperature: 10.0,
             mcs_per_step: None,
             total_steps: 2000,
             out_dir:    "data/sim3d/".to_string(),
             save_every: 100,
             png_every:  50,
+            volume_sigma: 0.0,
         }
     }
 }
