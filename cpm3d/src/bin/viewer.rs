@@ -8,6 +8,7 @@
 //!   C           Toggle centroids
 //!   L           Toggle lighting / flat colours
 //!   R           Reset camera
+//!   P           Save screenshot (screenshot_NNNN.png)
 //!   Space       Reload JSON from disk
 //!   Q / Esc     Quit
 //!
@@ -17,6 +18,7 @@
 
 use std::sync::Arc;
 use std::path::PathBuf;
+use png;
 
 use clap::Parser;
 use glam::{Mat4, Quat, Vec3};
@@ -275,14 +277,16 @@ fn arc_delta_quat(p0: Vec3, p1: Vec3) -> Quat {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 struct Viewer {
-    surface:        wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    device:         wgpu::Device,
-    queue:          wgpu::Queue,
-    pipeline:       wgpu::RenderPipeline,
-    depth_view:     wgpu::TextureView,
-    uniform_buf:    wgpu::Buffer,
-    bind_group:     wgpu::BindGroup,
+    surface:             wgpu::Surface<'static>,
+    surface_config:      wgpu::SurfaceConfiguration,
+    device:              wgpu::Device,
+    queue:               wgpu::Queue,
+    pipeline:            wgpu::RenderPipeline,
+    screenshot_pipeline: wgpu::RenderPipeline,
+    screenshot_counter:  u32,
+    depth_view:          wgpu::TextureView,
+    uniform_buf:         wgpu::Buffer,
+    bind_group:          wgpu::BindGroup,
 
     surf_buf:   Option<wgpu::Buffer>, surf_verts: u32,
 
@@ -370,39 +374,8 @@ impl Viewer {
             label: Some("pll"), bind_group_layouts: &[&bgl], push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  Some("pipeline"),
-            layout: Some(&pll),
-            vertex: wgpu::VertexState {
-                module: &shader, entry_point: "vs_main", buffers: &[VERTEX_LAYOUT],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader, entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_config.format,
-                    // Alpha blending: surface verts have alpha=1 (fully opaque),
-                    // centroid verts have alpha<1 (depth-faded).
-                    blend:  Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
+        let pipeline            = make_pipeline(&device, &shader, &pll, surface_config.format);
+        let screenshot_pipeline = make_pipeline(&device, &shader, &pll, wgpu::TextureFormat::Rgba8Unorm);
 
         let center   = Vec3::new(w as f32/2., h as f32/2., d as f32/2.);
         let dist     = w.max(h).max(d) as f32 * 2.0;
@@ -418,8 +391,9 @@ impl Viewer {
         println!("Meshes: {} surf tri, {} centroids", surf_verts/3, centroid_data.len());
 
         Self {
-            surface, surface_config, device, queue, pipeline, depth_view,
-            uniform_buf, bind_group,
+            surface, surface_config, device, queue, pipeline, screenshot_pipeline,
+            screenshot_counter: 0,
+            depth_view, uniform_buf, bind_group,
             surf_buf, surf_verts,
             centroid_data, grid_dim,
             camera: Camera::new(center, dist),
@@ -546,11 +520,168 @@ impl Viewer {
     fn scroll(&mut self, d: f32) {
         self.camera.distance = (self.camera.distance * (1.0 - d * 0.1)).max(1.0);
     }
+
+    fn screenshot(&mut self) {
+        let (w, h) = self.win_size;
+
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ss_tex"),
+            size:  wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format:    wgpu::TextureFormat::Rgba8Unorm,
+            usage:     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let tex_view   = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = make_depth_view(&self.device, w, h);
+
+        let aspect = w as f32 / h as f32;
+        let uni = Uniforms {
+            mvp:      self.camera.mvp(aspect).to_cols_array_2d(),
+            rot:      self.camera.rot_mat4().to_cols_array_2d(),
+            lighting: self.lighting as u32,
+            _pad:     [0; 3],
+        };
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uni));
+
+        let (cent_buf, cent_verts) = if self.show_centroids && !self.centroid_data.is_empty() {
+            let cv = build_centroid_mesh(
+                &self.centroid_data, self.camera.world_pos(),
+                self.camera.distance, self.grid_dim,
+            );
+            let n = cv.len() as u32;
+            (upload(&self.device, &cv, "ss_cent"), n)
+        } else {
+            (None, 0u32)
+        };
+
+        let mut enc = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("ss_enc") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ss_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &tex_view, resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.09, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.screenshot_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            if self.show_surface {
+                if let Some(b) = &self.surf_buf {
+                    pass.set_vertex_buffer(0, b.slice(..));
+                    pass.draw(0..self.surf_verts, 0..1);
+                }
+            }
+            if self.show_centroids {
+                if let Some(b) = &cent_buf {
+                    pass.set_vertex_buffer(0, b.slice(..));
+                    pass.draw(0..cent_verts, 0..1);
+                }
+            }
+        }
+
+        // Copy to CPU-readable staging buffer (rows must be 256-byte aligned)
+        let row_bytes         = w * 4;
+        let align             = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let row_bytes_aligned = (row_bytes + align - 1) / align * align;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ss_staging"),
+            size:  (row_bytes_aligned * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            tex.as_image_copy(),
+            wgpu::ImageCopyBuffer {
+                buffer: &staging,
+                layout: wgpu::ImageDataLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(row_bytes_aligned),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(enc.finish()));
+
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+
+        let raw = slice.get_mapped_range();
+        let mut pixels: Vec<u8> = Vec::with_capacity((w * h * 4) as usize);
+        for row in 0..h as usize {
+            let start = row * row_bytes_aligned as usize;
+            pixels.extend_from_slice(&raw[start..start + row_bytes as usize]);
+        }
+        drop(raw);
+        staging.unmap();
+
+        let path = format!("screenshot_{:04}.png", self.screenshot_counter);
+        self.screenshot_counter += 1;
+        let file = std::fs::File::create(&path).expect("cannot create screenshot file");
+        let mut encoder = png::Encoder::new(file, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        println!("Screenshot → {path}");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
+
+fn make_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pll:    &wgpu::PipelineLayout,
+    fmt:    wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label:  Some("pipeline"),
+        layout: Some(pll),
+        vertex: wgpu::VertexState {
+            module: shader, entry_point: "vs_main", buffers: &[VERTEX_LAYOUT],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader, entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: fmt,
+                blend:  Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
+}
 
 fn make_depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -590,7 +721,7 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    println!("CPM3D Viewer  —  S: surface  C: centroids  L: lighting  R: reset  Space: reload  Q: quit");
+    println!("CPM3D Viewer  —  S: surface  C: centroids  L: lighting  R: reset  P: screenshot  Space: reload  Q: quit");
 
     let event_loop = EventLoop::new().unwrap();
     let window = Arc::new(
@@ -646,6 +777,7 @@ fn main() {
                     }
                     KeyCode::KeyL => { viewer.lighting = !viewer.lighting; println!("Lighting: {}", viewer.lighting); }
                     KeyCode::KeyR => { viewer.camera.rotation = Quat::IDENTITY; println!("Camera reset"); }
+                    KeyCode::KeyP => { viewer.screenshot(); }
                     KeyCode::Space => { println!("Reloading…"); viewer.reload(); }
                     _ => {}
                 },
