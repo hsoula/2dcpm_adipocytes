@@ -58,7 +58,7 @@ fn main() {
     );
 
     sim.print_stats();
-
+    sim.save_state(None);
     while sim.mcs < cli.steps {
         sim.run_mcs();
         let is_last = sim.mcs + 1 == cli.steps;
