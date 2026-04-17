@@ -30,7 +30,7 @@ use winit::{
 use wgpu::util::DeviceExt;
 use bytemuck::{Pod, Zeroable};
 
-use cpm3d::grid::SaveState;
+    use cpm3d::grid::{SaveState, cell_centroids};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WGSL Shader
@@ -49,18 +49,19 @@ struct Uniforms {
 
 struct VIn {
     @location(0) pos    : vec3<f32>,
-    @location(1) color  : vec3<f32>,
+    @location(1) color  : vec4<f32>,   // rgb + alpha (1.0 for surface, depth-faded for centroids)
     @location(2) normal : vec3<f32>,
 };
 struct VOut {
-    @builtin(position) clip : vec4<f32>,
-    @location(0)       col  : vec3<f32>,
+    @builtin(position) clip  : vec4<f32>,
+    @location(0)       col   : vec3<f32>,
+    @location(1)       alpha : f32,
 };
 
 @vertex fn vs_main(v: VIn) -> VOut {
     var out: VOut;
     out.clip = u.mvp * vec4<f32>(v.pos, 1.0);
-    var col = v.color;
+    var col = v.color.rgb;
     if u.lighting != 0u {
         let n  = normalize(mat3x3<f32>(u.rot[0].xyz, u.rot[1].xyz, u.rot[2].xyz) * v.normal);
         let l1 = vec3<f32>(0.0, 0.0, 1.0);
@@ -68,12 +69,13 @@ struct VOut {
         let diff = 0.25 + 0.55 * max(dot(n, l1), 0.0) + 0.20 * max(dot(n, l2), 0.0);
         col = col * clamp(diff, 0.0, 1.0);
     }
-    out.col = col;
+    out.col   = col;
+    out.alpha = v.color.a;
     return out;
 }
 
 @fragment fn fs_main(in: VOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.col, 1.0);
+    return vec4<f32>(in.col, in.alpha);
 }
 "#;
 
@@ -90,17 +92,18 @@ struct Uniforms {
     _pad:     [u32; 3],
 }
 
+/// pos(3) + color_rgba(4) + normal(3) = 10 floats = 40 bytes
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct Vertex { pos: [f32;3], color: [f32;3], normal: [f32;3] }
+struct Vertex { pos: [f32;3], color: [f32;4], normal: [f32;3] }
 
 const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-    array_stride: std::mem::size_of::<Vertex>() as u64,
+    array_stride: std::mem::size_of::<Vertex>() as u64,  // 40 bytes
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &[
-        wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-        wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-        wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
+        wgpu::VertexAttribute { offset:  0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 }, // pos
+        wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x4 }, // color+alpha
+        wgpu::VertexAttribute { offset: 28, shader_location: 2, format: wgpu::VertexFormat::Float32x3 }, // normal
     ],
 };
 
@@ -136,9 +139,14 @@ const CUBE_FACES: [([[f32;3];4], [f32;3], (i32,i32,i32)); 6] = [
     ([[1.,0.,0.],[0.,0.,0.],[0.,1.,0.],[1.,1.,0.]], [ 0., 0.,-1.], ( 0, 0,-1)),
 ];
 
-fn emit_quad(out: &mut Vec<Vertex>, corners: &[[f32;3];4], col:[f32;3], nor:[f32;3], ox:f32, oy:f32, oz:f32) {
+fn emit_quad(out: &mut Vec<Vertex>, corners: &[[f32;3];4], col:[f32;3], alpha:f32, nor:[f32;3], ox:f32, oy:f32, oz:f32) {
+    let color = [col[0], col[1], col[2], alpha];
     for &i in &[0usize,1,2, 0,2,3] {
-        out.push(Vertex { pos:[corners[i][0]+ox,corners[i][1]+oy,corners[i][2]+oz], color:col, normal:nor });
+        out.push(Vertex {
+            pos:   [corners[i][0]+ox, corners[i][1]+oy, corners[i][2]+oz],
+            color,
+            normal: nor,
+        });
     }
 }
 
@@ -152,34 +160,77 @@ fn build_surface_mesh(grid: &[u32], w: usize, h: usize, d: usize) -> Vec<Vertex>
             let (nx,ny,nz) = (x as i32+dx, y as i32+dy, z as i32+dz);
             let nb = if nx<0||nx>=w as i32||ny<0||ny>=h as i32||nz<0||nz>=d as i32 { 0 }
                      else { grid[nz as usize*w*h + ny as usize*w + nx as usize] };
-            if nb != s { emit_quad(&mut verts, corners, col, *nor, x as f32, y as f32, z as f32); }
+            if nb != s { emit_quad(&mut verts, corners, col, 1.0, *nor, x as f32, y as f32, z as f32); }
         }
     }}}
     verts
 }
 
-fn build_centroid_mesh(grid: &[u32], w: usize, h: usize, d: usize,
-                       cells: &[cpm3d::cellstate::CellState]) -> Vec<Vertex> {
+/// Precomputed per-cell centroid info, filled on state load.
+struct CentroidInfo {
+    sigma:  u32,
+    pos:    [f32; 3],
+    radius: f32,
+}
+
+/// Precompute centroid geometry from a loaded state.
+/// Calls `cell_centroids` from `grid` module — the single source of truth.
+fn precompute_centroids(
+    grid:  &[u32],
+    w: usize, h: usize, d: usize,
+    cells: &[cpm3d::cellstate::CellState],
+) -> Vec<CentroidInfo> {
     let n = cells.len();
-    let mut sx = vec![0f64;n]; let mut sy = vec![0f64;n]; let mut sz = vec![0f64;n];
-    let mut cnt = vec![0u64;n];
-    for z in 0..d { for y in 0..h { for x in 0..w {
-        let s = grid[z*w*h+y*w+x] as usize;
-        if s==0||s>=n { continue; }
-        sx[s]+=x as f64; sy[s]+=y as f64; sz[s]+=z as f64; cnt[s]+=1;
-    }}}
-    let mut verts = Vec::new();
-    for (s, c) in cells.iter().enumerate() {
-        if s==0||!c.alive||cnt[s]==0 { continue; }
-        let (cx,cy,cz) = ((sx[s]/cnt[s] as f64) as f32,
-                          (sy[s]/cnt[s] as f64) as f32,
-                          (sz[s]/cnt[s] as f64) as f32);
-        let r = (cnt[s] as f32).cbrt() * 0.35 + 0.5;
-        let col = sigma_color(s as u32);
+    let centroids = cell_centroids(grid, w, h, d, n);
+
+    cells.iter().enumerate()
+        .filter(|(s, c)| *s > 0 && c.alive && c.volume > 0)
+        .map(|(s, c)| CentroidInfo {
+            sigma:  s as u32,
+            pos:    centroids[s],
+            radius: 0.80, //(c.volume as f32).cbrt() * 0.35 + 0.5,
+        })
+        .collect()
+}
+
+/// Build the centroid cube mesh for the current frame.
+///
+/// Centroids are sorted back-to-front so that semi-transparent cubes blend
+/// correctly.  Alpha is linearly faded from 1.0 (at `d_near`) to `ALPHA_FAR`
+/// (at `d_far`) based on each centroid's distance to the camera in world space.
+fn build_centroid_mesh(
+    infos:    &[CentroidInfo],
+    cam_pos:  Vec3,
+    cam_dist: f32,
+    grid_dim: f32,
+) -> Vec<Vertex> {
+    const ALPHA_FAR: f32 = 0.15;
+
+    let d_near = (cam_dist - grid_dim * 0.5).max(1.0);
+    let d_far  =  cam_dist + grid_dim * 0.5;
+
+    // Collect (distance², index) for back-to-front sort
+    let mut order: Vec<(f32, usize)> = infos.iter().enumerate().map(|(i, info)| {
+        let p = Vec3::from(info.pos);
+        ((p - cam_pos).length_squared(), i)
+    }).collect();
+    order.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut verts = Vec::with_capacity(infos.len() * 36);
+    for (dist_sq, i) in &order {
+        let info  = &infos[*i];
+        let dist  = dist_sq.sqrt();
+        let t     = ((dist - d_near) / (d_far - d_near)).clamp(0.0, 1.0);
+        let alpha = 1.0 - t * (1.0 - ALPHA_FAR);
+
+        let col = sigma_color(info.sigma);
+        let r   = info.radius;
+        let [cx, cy, cz] = info.pos;
+
         for (corners, nor, _) in &CUBE_FACES {
             let sc: [[f32;3];4] = std::array::from_fn(|i|
                 [corners[i][0]*2.*r+cx-r, corners[i][1]*2.*r+cy-r, corners[i][2]*2.*r+cz-r]);
-            emit_quad(&mut verts, &sc, col, *nor, 0.,0.,0.);
+            emit_quad(&mut verts, &sc, col, alpha, *nor, 0.,0.,0.);
         }
     }
     verts
@@ -201,6 +252,11 @@ impl Camera {
         proj * view * model
     }
     fn rot_mat4(&self) -> Mat4 { Mat4::from_quat(self.rotation) }
+
+    /// Camera position in world space.
+    fn world_pos(&self) -> Vec3 {
+        self.center + self.rotation.inverse() * Vec3::new(0., 0., self.distance)
+    }
 }
 
 fn screen_to_sphere(px:f32, py:f32, w:f32, h:f32) -> Vec3 {
@@ -229,7 +285,11 @@ struct Viewer {
     bind_group:     wgpu::BindGroup,
 
     surf_buf:   Option<wgpu::Buffer>, surf_verts: u32,
-    cent_buf:   Option<wgpu::Buffer>, cent_verts: u32,
+
+    /// Precomputed centroid positions/radii — rebuilt only on state reload.
+    centroid_data: Vec<CentroidInfo>,
+    /// Largest grid dimension — used to compute depth-fade range.
+    grid_dim: f32,
 
     camera:       Camera,
     drag_origin:  Option<(f32,f32)>,
@@ -321,7 +381,9 @@ impl Viewer {
                 module: &shader, entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_config.format,
-                    blend:  Some(wgpu::BlendState::REPLACE),
+                    // Alpha blending: surface verts have alpha=1 (fully opaque),
+                    // centroid verts have alpha<1 (depth-faded).
+                    blend:  Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -342,43 +404,45 @@ impl Viewer {
             multiview: None,
         });
 
-        let center = Vec3::new(w as f32/2., h as f32/2., d as f32/2.);
-        let dist   = w.max(h).max(d) as f32 * 2.0;
-        let title  = format!("CPM3D — {} — MCS {}", json_path.display(), state.mcs);
+        let center   = Vec3::new(w as f32/2., h as f32/2., d as f32/2.);
+        let dist     = w.max(h).max(d) as f32 * 2.0;
+        let grid_dim = w.max(h).max(d) as f32;
+        let title    = format!("CPM3D — {} — MCS {}", json_path.display(), state.mcs);
 
-        let mut viewer = Self {
+        let centroid_data = precompute_centroids(&state.grid, w, h, d, &state.cells);
+        let sv = build_surface_mesh(&state.grid, w, h, d);
+
+        let surf_verts = sv.len() as u32;
+        let surf_buf   = upload(&device, &sv, "surf");
+
+        println!("Meshes: {} surf tri, {} centroids", surf_verts/3, centroid_data.len());
+
+        Self {
             surface, surface_config, device, queue, pipeline, depth_view,
             uniform_buf, bind_group,
-            surf_buf: None, surf_verts: 0,
-            cent_buf: None, cent_verts: 0,
+            surf_buf, surf_verts,
+            centroid_data, grid_dim,
             camera: Camera::new(center, dist),
             drag_origin: None,
             win_size: (sz.width, sz.height),
             show_surface: true, show_centroids: false, lighting: true,
             json_path, title,
-        };
-        viewer.upload_meshes(&state.grid, w, h, d, &state.cells);
-        viewer
-    }
-
-    fn upload_meshes(&mut self, grid:&[u32], w:usize, h:usize, d:usize,
-                     cells:&[cpm3d::cellstate::CellState]) {
-        let sv = build_surface_mesh(grid, w, h, d);
-        let cv = build_centroid_mesh(grid, w, h, d, cells);
-        self.surf_verts = sv.len() as u32;
-        self.cent_verts = cv.len() as u32;
-        self.surf_buf = upload(&self.device, &sv, "surf");
-        self.cent_buf = upload(&self.device, &cv, "cent");
-        println!("Meshes: {} surf tri, {} centroid tri",
-            self.surf_verts/3, self.cent_verts/3);
+        }
     }
 
     fn reload(&mut self) {
         let state = load_json(&self.json_path);
         let (w,h,d) = (state.params.grid_w, state.params.grid_h, state.params.grid_d);
         self.camera.center = Vec3::new(w as f32/2., h as f32/2., d as f32/2.);
+        self.grid_dim = w.max(h).max(d) as f32;
         self.title = format!("CPM3D — {} — MCS {}", self.json_path.display(), state.mcs);
-        self.upload_meshes(&state.grid, w, h, d, &state.cells);
+
+        let sv = build_surface_mesh(&state.grid, w, h, d);
+        self.surf_verts = sv.len() as u32;
+        self.surf_buf   = upload(&self.device, &sv, "surf");
+        self.centroid_data = precompute_centroids(&state.grid, w, h, d, &state.cells);
+
+        println!("Reloaded: {} surf tri, {} centroids", self.surf_verts/3, self.centroid_data.len());
     }
 
     fn resize(&mut self, nw: u32, nh: u32) {
@@ -399,6 +463,21 @@ impl Viewer {
             _pad: [0;3],
         };
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uni));
+
+        // Build centroid buffer for this frame (cheap — few dozen cubes).
+        // Rebuilt every frame so alpha updates as camera rotates.
+        let (cent_buf, cent_verts) = if self.show_centroids && !self.centroid_data.is_empty() {
+            let cv = build_centroid_mesh(
+                &self.centroid_data,
+                self.camera.world_pos(),
+                self.camera.distance,
+                self.grid_dim,
+            );
+            let n = cv.len() as u32;
+            (upload(&self.device, &cv, "cent"), n)
+        } else {
+            (None, 0u32)
+        };
 
         let output = match self.surface.get_current_texture() {
             Ok(t)  => t,
@@ -425,11 +504,19 @@ impl Viewer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
+
+            // Draw opaque surface first, then transparent centroids on top.
             if self.show_surface {
-                if let Some(b) = &self.surf_buf { pass.set_vertex_buffer(0, b.slice(..)); pass.draw(0..self.surf_verts, 0..1); }
+                if let Some(b) = &self.surf_buf {
+                    pass.set_vertex_buffer(0, b.slice(..));
+                    pass.draw(0..self.surf_verts, 0..1);
+                }
             }
             if self.show_centroids {
-                if let Some(b) = &self.cent_buf { pass.set_vertex_buffer(0, b.slice(..)); pass.draw(0..self.cent_verts, 0..1); }
+                if let Some(b) = &cent_buf {
+                    pass.set_vertex_buffer(0, b.slice(..));
+                    pass.draw(0..cent_verts, 0..1);
+                }
             }
         }
         self.queue.submit(std::iter::once(enc.finish()));

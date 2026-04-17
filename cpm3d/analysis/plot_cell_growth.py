@@ -110,8 +110,8 @@ def plot_growth(
 
     ax_vol.set_ylabel("Volume (voxels)", fontsize=11)
     ax_vol.set_title("Per-cell volume trajectories", fontsize=12)
-    ax_vol.legend(fontsize=7, ncol=min(4, max(1, n_cells // 5 + 1)),
-                  loc="upper left", framealpha=0.7)
+    #ax_vol.legend(fontsize=7, ncol=min(4, max(1, n_cells // 5 + 1)),
+    #              loc="upper left", framealpha=0.7)
     ax_vol.grid(True, alpha=0.3)
 
     ax_tvol.set_ylabel("Target volume (voxels)", fontsize=11)
