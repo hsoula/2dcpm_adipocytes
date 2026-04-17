@@ -36,6 +36,11 @@ pub struct Params {
     /// Std-dev of Gaussian noise applied to each cell's initial target_volume.
     /// 0.0 = all cells start with the same target_volume.
     pub volume_sigma: f64,
+
+    /// introduce in the volume loss energy to prevent small cells to disappear
+    /// deltaH += penalty / (Volume) ^ n
+    pub small_volume_penalty : f64,
+    pub small_volume_n: f64,
 }
 
 impl Default for Params {
@@ -62,6 +67,8 @@ impl Default for Params {
             save_every: 100,
             png_every:  50,
             volume_sigma: 0.0,
+            small_volume_penalty: 1000f64,
+            small_volume_n: 1f64,
         }
     }
 }

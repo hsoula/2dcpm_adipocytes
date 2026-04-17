@@ -16,7 +16,7 @@
 use std::fs;
 use std::path::PathBuf;
 use clap::Parser;
-use cpm3d::grid::SaveState;
+use cpm3d::grid::{cell_centroids, SaveState};
 
 #[derive(Parser)]
 struct Cli {
@@ -54,7 +54,7 @@ fn main() {
     let ts_path   = cli.dir.join("volume_timeseries.csv");
     let dist_path = cli.dir.join("volume_distribution.csv");
 
-    let mut ts_rows   = vec!["mcs,sigma,volume,surface,target_volume".to_string()];
+    let mut ts_rows   = vec!["mcs,sigma,volume,surface,target_volume,ratio,cent_x,cent_y,cent_z".to_string()];
     let mut dist_rows = vec!["mcs,n_cells,mean_vol,std_vol,min_vol,max_vol".to_string()];
 
     // ── Parse each snapshot ───────────────────────────────────────────────────
@@ -70,10 +70,11 @@ fn main() {
         let alive: Vec<_> = state.cells.iter()
             .filter(|c| c.id > 0 && c.alive)
             .collect();
-
+        let centroids = cell_centroids(&state.grid, state.params.grid_h, state.params.grid_w,state.params.grid_d, state.params.n_cells + 1);
         // Per-cell rows
-        for c in &alive {
-            ts_rows.push(format!("{},{},{},{},{}", mcs, c.id, c.volume, c.surface, c.target_volume));
+        for (k,c) in alive.iter().enumerate() {
+            let v = centroids[c.id  as usize ];
+            ts_rows.push(format!("{},{},{},{},{},{},{},{},{}", mcs, c.id, c.volume, c.surface, c.target_volume,(c.volume as f64)/(c.target_volume as f64),v[0], v[1], v[2]));
         }
 
         // Distribution summary

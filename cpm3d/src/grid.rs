@@ -1,6 +1,7 @@
 use std::fs;
 use rand::prelude::*;
 use rand_distr::{Distribution, Normal};
+use rand_distr::num_traits::Pow;
 use serde::{Deserialize, Serialize};
 
 use crate::cellstate::CellState;
@@ -190,10 +191,13 @@ impl Cpm3d {
     #[inline]
     fn delta_h_volume(&self, s_old: u32, s_new: u32) -> f64 {
         let lam = self.p.lambda_vol;
+        let penalty = self.p.small_volume_penalty;
+        let n = self.p.small_volume_n;
         let mut dh = 0.0;
         if s_old > 0 {
             let c = &self.cells[s_old as usize];
             dh += delta_volume_loss(c.volume, c.target_volume, lam);
+            dh +=  penalty / (c.volume as f64).pow(n);
         }
         if s_new > 0 {
             let c = &self.cells[s_new as usize];
