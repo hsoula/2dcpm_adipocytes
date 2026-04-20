@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np 
-rf = pd.read_csv('data/sim3d/volume_timeseries.csv')
+rf = pd.read_csv('data/sim3d_life/volume_timeseries.csv')
 last = max(rf.mcs)
 rfe = rf[rf.mcs==last]
 rfs = rf[rf.mcs==0]
@@ -16,5 +16,5 @@ b = 0.5 * (bins[1:]+bins[:-1])
 plt.plot(b, he)
 plt.plot(b, hs)
 plt.legend(['final','start'])
-plt.savefig('results/distrib.png')
+plt.savefig('results/distrib_life.png')
 plt.show()

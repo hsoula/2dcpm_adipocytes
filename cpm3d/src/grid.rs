@@ -9,6 +9,11 @@ use crate::energy::{j, delta_volume_loss, delta_volume_gain, delta_surface, delt
 use crate::init::{place_cells_spheres, place_cells_spheres_individual};
 use crate::params::Params;
 
+pub fn compute_surface_from_volume(volume: f64) -> f64 {
+    ((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
+        * (volume).powf(2.0 / 3.0)).round()
+}
+
 // ── Neighbour offsets ─────────────────────────────────────────────────────────
 
 /// 26-connected Moore neighbourhood (copy-attempt candidates).
@@ -80,8 +85,8 @@ impl Cpm3d {
                     p.target_volume
                 };
                 // Recompute target_surface to match sampled volume (sphere approximation).
-                let ts = ((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
-                    * (tv as f64).powf(2.0 / 3.0)).round() as i64;
+                let ts = compute_surface_from_volume(tv as f64) as i64; //((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
+                    //* (tv as f64).powf(2.0 / 3.0)).round() as i64;
                 let mut c = CellState::new(k as u32, tv, ts);
                 if k == 0 { c.alive = false; }
                 c
@@ -121,7 +126,26 @@ impl Cpm3d {
         sim.recompute_stats();
         sim
     }
+    #[inline]
+    pub fn grid_set(&mut self, sigma: u32, x: usize, y: usize, z: usize)  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        self.grid[z * w * h + y * w + x] = sigma;
+    }
+    #[inline]
+    pub fn grid_get(&self, x: usize, y: usize, z: usize) -> u32  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        self.grid[z * w * h + y * w + x]
+    }
 
+    #[inline]
+    pub fn in_grid(&self, sigma: u32, x: usize, y: usize, z: usize) -> bool  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        let d = self.p.grid_d;
+        x > 0 && x < w && y > 0 && y < h && z > 0 && z < d
+    }
     pub fn from_save(s: SaveState) -> Self {
         let mcs_size = s.params.mcs_per_step
             .unwrap_or(s.params.grid_w * s.params.grid_h * s.params.grid_d);

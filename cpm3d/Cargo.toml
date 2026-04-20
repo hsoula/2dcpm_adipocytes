@@ -29,4 +29,6 @@ winit     = "0.29"
 wgpu      = "0.20"
 pollster  = "0.3"        # block_on for async wgpu init
 bytemuck  = { version = "1", features = ["derive"] }
-glam      = "0.27"       # Vec3/Mat4/Quat
+glam      = "0.27"
+glob = "0.3.3"
+csv = "1.4.0"       # Vec3/Mat4/Quat

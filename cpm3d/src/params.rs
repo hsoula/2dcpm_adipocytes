@@ -41,6 +41,10 @@ pub struct Params {
     /// deltaH += penalty / (Volume) ^ n
     pub small_volume_penalty : f64,
     pub small_volume_n: f64,
+    pub growth_rate: f64,
+    pub death_rate: f64,
+    pub death_volume_threshold: f64,
+    pub birth_rate: f64,
 }
 
 impl Default for Params {
@@ -69,6 +73,10 @@ impl Default for Params {
             volume_sigma: 0.0,
             small_volume_penalty: 1000f64,
             small_volume_n: 1f64,
+            growth_rate : 0.001,
+            death_rate : 0.01,
+            death_volume_threshold: 4.0,
+            birth_rate : 0.01,
         }
     }
 }
