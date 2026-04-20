@@ -35,8 +35,9 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    fs::create_dir_all(&cli.out_dir).unwrap();
-    fs::create_dir_all(format!("{}/events/", &cli.out_dir)).unwrap();
+    let dir = format!("{}_{}", cli.out_dir.clone(), &cli.seed.unwrap());
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(format!("{}/events/", &dir)).unwrap();
 
     let mut sim: Cpm3d = if !cli.load.is_empty() && Path::new(&cli.load).exists() {
         Cpm3d::load_state(&cli.load)
@@ -54,7 +55,7 @@ fn main() {
         p.total_steps   = cli.steps;
         p.save_every    = cli.save_every;
         p.png_every     = cli.png_every;
-        p.out_dir       = cli.out_dir.clone();
+        p.out_dir       = dir.clone();
         p.growth_rate   = cli.grow_rate;
         p.birth_rate    = cli.birth_rate;
         p.death_rate    = cli.death_rate;
@@ -72,7 +73,6 @@ fn main() {
     let mut events_csv = fs::File::create(&events_path).expect("cannot create events.csv");
     writeln!(events_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
         .expect("cannot write events.csv header");
-
 
     sim.print_stats();
     sim.save_state(None);

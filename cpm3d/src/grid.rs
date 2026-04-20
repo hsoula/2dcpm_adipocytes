@@ -64,6 +64,7 @@ pub struct Cpm3d {
     pub grid:     Vec<u32>,
     pub cells:    Vec<CellState>,
     pub mcs_size: usize,
+    pub cell_back_log : i64,
     pub rng:      StdRng,
 }
 
@@ -79,6 +80,7 @@ impl Cpm3d {
             grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
             cells,
             mcs: 0,
+            cell_back_log: 0,
             rng: seeded_rng(p.seed, 1),
             p: p.clone(),
         };
@@ -180,8 +182,9 @@ impl Cpm3d {
             mcs: s.mcs,
             grid: s.grid,
             cells: s.cells,
-            mcs_size,
-            rng,
+            cell_back_log:0,
+            mcs_size: mcs_size,
+            rng:rng,
         }
     }
 

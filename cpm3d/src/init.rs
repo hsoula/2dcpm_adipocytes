@@ -80,7 +80,7 @@ pub fn place_cells_spheres_individual(
                 let hi_y = ((cy + radius).ceil() as usize).min(h - 1);
                 let lo_z = ((cz - radius).floor() as usize).max(0);
                 let hi_z = ((cz + radius).ceil() as usize).min(d - 1);
-                let r2 = 3f64;
+                let r2 = 1f64;
                 for z in lo_z..=hi_z {
                     for y in lo_y..=hi_y {
                         for x in lo_x..=hi_x {

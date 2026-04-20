@@ -18,7 +18,7 @@ use std::f64::consts::PI;
 use rand::Rng;
 use rand::prelude::*;
 use rand_distr::Normal;
-use crate::cellstate::CellState;
+use crate::cellstate::{CellState, MIN_VOL};
 use crate::grid::{Cpm3d, compute_surface_from_volume};
 
 // ── Event types ───────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ impl Cpm3d {
         for cell in self.cells.iter_mut() {
             if cell.id == 0 || !cell.alive || cell.dying { continue; }
             cell.lipid += rate;
-            cell.target_volume  = cell.lipid as i64 + 4i64;
+            cell.target_volume  = cell.lipid as i64 + MIN_VOL;
             cell.target_surface = compute_surface_from_volume(cell.target_volume as f64) as i64;
         }
     }
@@ -152,10 +152,13 @@ impl Cpm3d {
     fn maybe_birth_cell(&mut self, events: &mut Vec<DemographyEvent>) {
         let prob = self.p.birth_rate;
         if prob <= 0.0 { return; }
-        if !self.rng.gen_bool(prob.min(1.0)) { return; }
+        if !self.rng.gen_bool(prob.min(1.0)) && self.cell_back_log == 0
+            { return; }
 
-        let w = self.p.grid_w;
+        self.cell_back_log += 1;
+
         let h = self.p.grid_h;
+        let w = self.p.grid_w;
         let d = self.p.grid_d;
 
         let mut free: Vec<(usize, usize, usize)> = Vec::new();
@@ -194,12 +197,12 @@ impl Cpm3d {
         } else {
             None
         };
-        let ta = if let Some(ref dist) = normal_dist {
+        let ta = MIN_VOL; /* let Some(ref dist) = normal_dist {
             let v = dist.sample(&mut self.rng).round() as i64;
             v.max(1)
         } else {
             self.p.target_volume
-        };
+        };*/
         let tp = compute_surface_from_volume(ta as f64) as i64;
         let mcs = self.mcs;
         {
