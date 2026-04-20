@@ -37,6 +37,10 @@ pub struct Params {
     /// 0.0 = all cells start with the same target_volume.
     pub volume_sigma: f64,
 
+    /// RNG seed for reproducibility.  `None` = draw from entropy (non-deterministic).
+    #[serde(default)]
+    pub seed: Option<u64>,
+
     /// introduce in the volume loss energy to prevent small cells to disappear
     /// deltaH += penalty / (Volume) ^ n
     pub small_volume_penalty : f64,
@@ -71,6 +75,7 @@ impl Default for Params {
             save_every: 100,
             png_every:  50,
             volume_sigma: 0.0,
+            seed: None,
             small_volume_penalty: 1000f64,
             small_volume_n: 1f64,
             growth_rate : 0.001,

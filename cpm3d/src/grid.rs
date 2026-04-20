@@ -9,6 +9,15 @@ use crate::energy::{j, delta_volume_loss, delta_volume_gain, delta_surface, delt
 use crate::init::{place_cells_spheres, place_cells_spheres_individual};
 use crate::params::Params;
 
+/// Build a seeded RNG (stream offset avoids init/sim correlation).
+/// `stream=0` for init sampling, `stream=1` for the main simulation RNG.
+fn seeded_rng(seed: Option<u64>, stream: u64) -> StdRng {
+    match seed {
+        Some(s) => StdRng::seed_from_u64(s.wrapping_add(stream)),
+        None    => StdRng::from_entropy(),
+    }
+}
+
 pub fn compute_surface_from_volume(volume: f64) -> f64 {
     ((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
         * (volume).powf(2.0 / 3.0)).round()
@@ -61,70 +70,85 @@ pub struct Cpm3d {
 impl Cpm3d {
     // ── Construction ──────────────────────────────────────────────────────────
 
-    pub fn new(p: Params) -> Self {
-        let n = p.n_cells;
+    /// Shared tail: create the struct, place spherical seeds, recompute stats.
+    /// `cells` must already be fully populated (index 0 = medium, alive=false).
+    fn build(p: Params, cells: Vec<CellState>) -> Self {
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h * p.grid_d);
+        let mut sim = Self {
+            mcs_size,
+            grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
+            cells,
+            mcs: 0,
+            rng: seeded_rng(p.seed, 1),
+            p: p.clone(),
+        };
+        fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
+        if p.volume_sigma > 0.0 {
+            place_cells_spheres_individual(
+                &mut sim.grid, p.grid_w, p.grid_h, p.grid_d, &sim.cells,
+            );
+        } else {
+            let radius = ((3.0 / (4.0 * std::f64::consts::PI))
+                * p.target_volume as f64).powf(1.0 / 3.0);
+            place_cells_spheres(
+                &mut sim.grid, p.grid_w, p.grid_h, p.grid_d, p.n_cells, radius,
+            );
+        }
+        sim.recompute_stats();
+        sim
+    }
 
-        // cell 0 = medium (alive=false keeps it out of demography loops)
-        // If volume_sigma > 0, sample each cell's target_volume independently
-        // from N(target_volume, volume_sigma²), clamped to [1, ∞).
-        let mut rng_init = StdRng::from_entropy();
+    /// Standard init: flat target volume, or Gaussian per-cell when `volume_sigma > 0`.
+    pub fn new(p: Params) -> Self {
+        let mut rng_init = seeded_rng(p.seed, 0);
         let normal_dist = if p.volume_sigma > 0.0 {
             Normal::new(p.target_volume as f64, p.volume_sigma).ok()
         } else {
             None
         };
-        let cells: Vec<CellState> = (0..=n)
+        let cells: Vec<CellState> = (0..=p.n_cells)
             .map(|k| {
                 let tv = if k == 0 {
                     p.target_volume
                 } else if let Some(ref dist) = normal_dist {
-                    let v = dist.sample(&mut rng_init).round() as i64;
-                    v.max(1)
+                    (dist.sample(&mut rng_init).round() as i64).max(1)
                 } else {
                     p.target_volume
                 };
-                // Recompute target_surface to match sampled volume (sphere approximation).
-                let ts = compute_surface_from_volume(tv as f64) as i64; //((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
-                    //* (tv as f64).powf(2.0 / 3.0)).round() as i64;
+                let ts = compute_surface_from_volume(tv as f64) as i64;
                 let mut c = CellState::new(k as u32, tv, ts);
                 if k == 0 { c.alive = false; }
                 c
             })
             .collect();
+        Self::build(p, cells)
+    }
 
-        let mut sim = Self {
-            p: p.clone(),
-            mcs: 0,
-            grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
-            cells,
-            mcs_size,
-            rng: StdRng::from_entropy(),
-        };
+    /// Flat init: all cells get exactly `p.target_volume` (ignores `volume_sigma`).
+    pub fn new_with_flat(p: Params) -> Self {
+        let tv = p.target_volume;
+        let ts = compute_surface_from_volume(tv as f64) as i64;
+        let cells: Vec<CellState> = (0..=p.n_cells)
+            .map(|k| {
+                let mut c = CellState::new(k as u32, tv, ts);
+                if k == 0 { c.alive = false; }
+                c
+            })
+            .collect();
+        Self::build(p, cells)
+    }
 
-        fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
-
-        // Place spherical seeds.  When volume_sigma > 0, each cell gets its own
-        // radius derived from its individually-sampled target_volume.
-        if p.volume_sigma > 0.0 {
-            place_cells_spheres_individual(
-                &mut sim.grid,
-                p.grid_w, p.grid_h, p.grid_d,
-                &sim.cells,
-            );
-        } else {
-            let radius = ((3.0 / (4.0 * std::f64::consts::PI))
-                * p.target_volume as f64)
-                .powf(1.0 / 3.0);
-            place_cells_spheres(
-                &mut sim.grid,
-                p.grid_w, p.grid_h, p.grid_d,
-                p.n_cells, radius,
-            );
-        }
-
-        sim.recompute_stats();
-        sim
+    /// Empty init: cells start with zero lipid and the minimum viable volume (4).
+    /// Use this when the lipid content drives target-volume growth from scratch.
+    pub fn new_empty(p: Params) -> Self {
+        let cells: Vec<CellState> = (0..=p.n_cells)
+            .map(|k| {
+                let mut c = CellState::new_empty(k as u32);
+                if k == 0 { c.alive = false; }
+                c
+            })
+            .collect();
+        Self::build(p, cells)
     }
     #[inline]
     pub fn grid_set(&mut self, sigma: u32, x: usize, y: usize, z: usize)  {
@@ -150,13 +174,14 @@ impl Cpm3d {
         let mcs_size = s.params.mcs_per_step
             .unwrap_or(s.params.grid_w * s.params.grid_h * s.params.grid_d);
         fs::create_dir_all(&s.params.out_dir).expect("cannot create out_dir");
+        let rng = seeded_rng(s.params.seed, 1);
         Self {
             p: s.params,
             mcs: s.mcs,
             grid: s.grid,
             cells: s.cells,
             mcs_size,
-            rng: StdRng::from_entropy(),
+            rng,
         }
     }
 

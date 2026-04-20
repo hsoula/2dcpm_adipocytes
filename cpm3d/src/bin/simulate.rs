@@ -25,6 +25,8 @@ struct Cli {
     #[arg(long, default_value = "50")]   png_every: usize,
     #[arg(long, default_value = "data/sim3d/")] out_dir: String,
     #[arg(long, default_value = "")] load: String,
+    /// RNG seed for reproducibility (omit for random).
+    #[arg(long)] seed: Option<u64>,
 }
 
 fn main() {
@@ -48,6 +50,7 @@ fn main() {
         p.save_every    = cli.save_every;
         p.png_every     = cli.png_every;
         p.out_dir       = cli.out_dir.clone();
+        p.seed          = cli.seed;
         Cpm3d::new(p)
     };
 

@@ -15,7 +15,6 @@
 //! event log without re-scanning the cell list.
 
 use std::f64::consts::PI;
-use rand::prelude::StdRng;
 use rand::Rng;
 use rand::prelude::*;
 use rand_distr::Normal;
@@ -65,11 +64,12 @@ impl Cpm3d {
     /// Increase target_area (and matching target_perimeter) for every live,
     /// non-dying cell by `growth_rate` pixels.
     fn grow_cells(&mut self) {
-        let rate = self.p.growth_rate as i64;
-        if rate == 0 { return; }
+        let rate = self.p.growth_rate as f64;
+        //if rate == 0 { return; }
         for cell in self.cells.iter_mut() {
             if cell.id == 0 || !cell.alive || cell.dying { continue; }
-            cell.target_volume += rate;
+            cell.lipid += rate;
+            cell.target_volume  = cell.lipid as i64 + 4i64;
             cell.target_surface = compute_surface_from_volume(cell.target_volume as f64) as i64;
         }
     }
@@ -194,9 +194,8 @@ impl Cpm3d {
         } else {
             None
         };
-        let mut rng_init = StdRng::from_entropy();
         let ta = if let Some(ref dist) = normal_dist {
-            let v = dist.sample(&mut rng_init).round() as i64;
+            let v = dist.sample(&mut self.rng).round() as i64;
             v.max(1)
         } else {
             self.p.target_volume
