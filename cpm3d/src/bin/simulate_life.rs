@@ -35,7 +35,10 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    let dir = format!("{}_{}", cli.out_dir.clone(), &cli.seed.unwrap());
+    let seed_str = cli.seed.map(|s| s.to_string()).unwrap_or_else(|| "rand".to_string());
+    let dir = format!("{}_s{}_g{}_d{}_b{}",
+        cli.out_dir.trim_end_matches('/'), seed_str,
+        cli.grow_rate, cli.death_rate, cli.birth_rate);
     fs::create_dir_all(&dir).unwrap();
     fs::create_dir_all(format!("{}/events/", &dir)).unwrap();
 
@@ -69,7 +72,7 @@ fn main() {
         sim.p.n_cells, sim.p.temperature, cli.steps
     );
 
-    let events_path = format!("{}/events.csv", &cli.out_dir);
+    let events_path = format!("{}/events.csv", &dir);
     let mut events_csv = fs::File::create(&events_path).expect("cannot create events.csv");
     writeln!(events_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
         .expect("cannot write events.csv header");
