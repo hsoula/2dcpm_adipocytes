@@ -15,6 +15,14 @@ path = "src/bin/viewer.rs"
 name = "analyze"
 path = "src/bin/analyze.rs"
 
+[[bin]]
+name = "simulate_life"
+path = "src/bin/simulate_life.rs"
+
+[[bin]]
+name = "collect_results"
+path = "src/bin/collect_results.rs"
+
 [dependencies]
 # Simulation
 rand      = "0.8"
