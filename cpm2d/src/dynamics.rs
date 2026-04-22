@@ -62,7 +62,7 @@ impl Cpm2d {
     /// Increase target_area (and matching target_perimeter) for every live,
     /// non-dying cell by `growth_rate` pixels.
     fn grow_cells(&mut self) {
-        let rate = self.p.growth_rate as i64;
+        let rate = self.p.growth_rates as i64;
         if rate == 0 { return; }
         for cell in self.cells.iter_mut() {
             if cell.id == 0 || !cell.alive || cell.dying { continue; }
