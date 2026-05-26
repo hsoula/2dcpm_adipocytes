@@ -30,6 +30,8 @@ struct Cli {
     #[arg(long, default_value = "0.02")] death_rate: f64,
     #[arg(long, default_value = "0.01")] birth_rate: f64,
     #[arg(long, default_value = "1.0")] grow_rate: f64,
+    /// Record every accepted voxel flip to growth_trace.csv (can be large).
+    #[arg(long, default_value = "false")] track_growth: bool,
     /// RNG seed for reproducibility (omit for random).
     #[arg(long)] seed: Option<u64>,
 }
@@ -79,10 +81,39 @@ fn main() {
     writeln!(events_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
         .expect("cannot write events.csv header");
 
+    let mut growth_csv = if cli.track_growth {
+        let path = format!("{}/growth_trace.csv", &dir);
+        let mut f = fs::File::create(&path).expect("cannot create growth_trace.csv");
+        writeln!(f, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
+            .expect("cannot write growth_trace.csv header");
+        Some(f)
+    } else {
+        None
+    };
+
     sim.print_stats();
     sim.save_state(None);
     while sim.mcs < cli.steps {
-        sim.run_mcs();
+        // run MCS, optionally collecting per-flip volume events
+        let growth_events = if cli.track_growth {
+            sim.run_mcs_tracked()
+        } else {
+            sim.run_mcs();
+            Vec::new()
+        };
+
+        if let Some(ref mut f) = growth_csv {
+            for ev in &growth_events {
+                let kind_str = match ev.kind {
+                    cpm3d::dynamics::EventKind::Grow   => "grow",
+                    cpm3d::dynamics::EventKind::Shrink => "shrink",
+                    _ => continue,
+                };
+                writeln!(f, "{},{},{},{},{},{}", kind_str, ev.mcs, ev.sigma,
+                    ev.volume_at_event, ev.birth_mcs, ev.lifetime_mcs)
+                    .expect("cannot write growth_trace row");
+            }
+        }
 
         // -- do the demography
         let dem_events = sim.step_demography();
@@ -91,9 +122,10 @@ fn main() {
         if !dem_events.is_empty() {
             for ev in &dem_events {
                 let kind_str = match ev.kind {
-                    EventKind::Birth => "birth",
-                    EventKind::Dead => "death",
-                    EventKind::Dying => "dying",
+                    EventKind::Birth  => "birth",
+                    EventKind::Dead   => "death",
+                    EventKind::Dying  => "dying",
+                    EventKind::Grow | EventKind::Shrink => continue,
                 };
                 writeln!(
                     events_csv,

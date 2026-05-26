@@ -20,28 +20,7 @@ use rand::prelude::*;
 use rand_distr::Normal;
 use crate::cellstate::{CellState, MIN_VOL};
 use crate::grid::{Cpm3d, compute_surface_from_volume};
-
-// ── Event types ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub enum EventKind {
-    Birth,
-    Dying,
-    Dead,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DemographyEvent {
-    pub kind:         EventKind,
-    pub sigma:        u32,
-    pub mcs:          usize,
-    /// Actual area of the cell when the event fired
-    pub volume_at_event: i64,
-    /// MCS when this cell was born (same as mcs for births)
-    pub birth_mcs:    usize,
-    /// mcs - birth_mcs  (0 for births)
-    pub lifetime_mcs: usize,
-}
+pub use crate::events::{EventKind, DemographyEvent};
 
 // ── Cpm2d impl ────────────────────────────────────────────────────────────────
 
