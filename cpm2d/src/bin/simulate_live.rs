@@ -97,7 +97,7 @@ fn main() {
         p.console_every        = cli.save_every;
         p.png_every            = cli.save_every;
         p.frames_dir           = out_dir.clone();
-        p.growth_rate          = cli.growth_rate;
+        p.growth_rates         = cli.growth_rate;
         p.death_prob           = cli.death_prob;
         p.birth_prob           = cli.birth_prob;
         p.death_area_threshold = cli.death_area_threshold;
@@ -112,7 +112,7 @@ fn main() {
          growth_rate={:.3}  death_prob={:.4}  birth_prob={:.4}  death_threshold={}\n\
          save_every={}  png_every={}  console_every={}",
         sim.p.grid_w, sim.p.grid_h, sim.p.n_cells, sim.p.temperature, cli.steps,
-        sim.p.growth_rate, sim.p.death_prob, sim.p.birth_prob, sim.p.death_area_threshold,
+        sim.p.growth_rates, sim.p.death_prob, sim.p.birth_prob, sim.p.death_area_threshold,
         cli.save_every, png_every, console_every,
     );
 

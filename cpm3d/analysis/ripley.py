@@ -47,7 +47,7 @@ def ripley_K_3d(points, r_vals, box_mins, box_maxs, box_volume,
 
     return np.array(K)
 
-rf = pd.read_csv('data/sim3d/volume_timeseries.csv')
+rf = pd.read_csv('data/sim3d_life/volume_timeseries.csv')
 
 last = max(rf.mcs)
 rfe = rf[rf.mcs==last]
@@ -64,5 +64,5 @@ K_obs = ripley_K_3d(centroids, r_vals, box_mins, box_maxs, box_volume)
 print(K_obs)
 L_obs = (np.where(K_obs > 0, K_obs, np.nan) / ((4/3) * np.pi)) ** (1/3) - r_vals
 plt.plot(r_vals, L_obs)
-plt.savefig('results/ripley.png')
+plt.savefig('results/ripley_life.png')
 plt.show()

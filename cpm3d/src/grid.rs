@@ -6,8 +6,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::cellstate::CellState;
 use crate::energy::{j, delta_volume_loss, delta_volume_gain, delta_surface, delta_sphericity};
+use crate::events::{DemographyEvent, EventKind};
 use crate::init::{place_cells_spheres, place_cells_spheres_individual};
 use crate::params::Params;
+
+/// Build a seeded RNG (stream offset avoids init/sim correlation).
+/// `stream=0` for init sampling, `stream=1` for the main simulation RNG.
+fn seeded_rng(seed: Option<u64>, stream: u64) -> StdRng {
+        match seed {
+            Some(s) => StdRng::seed_from_u64(s.wrapping_add(stream)),
+            None    => StdRng::from_entropy(),
+        }
+}
+
+pub fn compute_surface_from_volume(volume: f64) -> f64 {
+    ((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
+        * (volume).powf(2.0 / 3.0)).round()
+}
 
 // ── Neighbour offsets ─────────────────────────────────────────────────────────
 
@@ -50,89 +65,127 @@ pub struct Cpm3d {
     pub grid:     Vec<u32>,
     pub cells:    Vec<CellState>,
     pub mcs_size: usize,
+    pub cell_back_log : i64,
     pub rng:      StdRng,
 }
 
 impl Cpm3d {
     // ── Construction ──────────────────────────────────────────────────────────
 
-    pub fn new(p: Params) -> Self {
-        let n = p.n_cells;
+    /// Shared tail: create the struct, place spherical seeds, recompute stats.
+    /// `cells` must already be fully populated (index 0 = medium, alive=false).
+    fn build(p: Params, cells: Vec<CellState>) -> Self {
         let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h * p.grid_d);
+        let mut sim = Self {
+            mcs_size,
+            grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
+            cells,
+            mcs: 0,
+            cell_back_log: 0,
+            rng: seeded_rng(p.seed, 1),
+            p: p.clone(),
+        };
+        fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
+        if p.volume_sigma > 0.0 {
+            place_cells_spheres_individual(
+                &mut sim.grid, p.grid_w, p.grid_h, p.grid_d, &sim.cells,
+            );
+        } else {
+            let radius = ((3.0 / (4.0 * std::f64::consts::PI))
+                * p.target_volume as f64).powf(1.0 / 3.0);
+            place_cells_spheres(
+                &mut sim.grid, p.grid_w, p.grid_h, p.grid_d, p.n_cells, radius,
+            );
+        }
+        sim.recompute_stats();
+        sim
+    }
 
-        // cell 0 = medium (alive=false keeps it out of demography loops)
-        // If volume_sigma > 0, sample each cell's target_volume independently
-        // from N(target_volume, volume_sigma²), clamped to [1, ∞).
-        let mut rng_init = StdRng::from_entropy();
+    /// Standard init: flat target volume, or Gaussian per-cell when `volume_sigma > 0`.
+    pub fn new(p: Params) -> Self {
+        let mut rng_init = seeded_rng(p.seed, 0);
         let normal_dist = if p.volume_sigma > 0.0 {
             Normal::new(p.target_volume as f64, p.volume_sigma).ok()
         } else {
             None
         };
-        let cells: Vec<CellState> = (0..=n)
+        let cells: Vec<CellState> = (0..=p.n_cells)
             .map(|k| {
                 let tv = if k == 0 {
                     p.target_volume
                 } else if let Some(ref dist) = normal_dist {
-                    let v = dist.sample(&mut rng_init).round() as i64;
-                    v.max(1)
+                    (dist.sample(&mut rng_init).round() as i64).max(1)
                 } else {
                     p.target_volume
                 };
-                // Recompute target_surface to match sampled volume (sphere approximation).
-                let ts = ((36.0 * std::f64::consts::PI).powf(1.0 / 3.0)
-                    * (tv as f64).powf(2.0 / 3.0)).round() as i64;
+                let ts = compute_surface_from_volume(tv as f64) as i64;
                 let mut c = CellState::new(k as u32, tv, ts);
                 if k == 0 { c.alive = false; }
                 c
             })
             .collect();
-
-        let mut sim = Self {
-            p: p.clone(),
-            mcs: 0,
-            grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
-            cells,
-            mcs_size,
-            rng: StdRng::from_entropy(),
-        };
-
-        fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
-
-        // Place spherical seeds.  When volume_sigma > 0, each cell gets its own
-        // radius derived from its individually-sampled target_volume.
-        if p.volume_sigma > 0.0 {
-            place_cells_spheres_individual(
-                &mut sim.grid,
-                p.grid_w, p.grid_h, p.grid_d,
-                &sim.cells,
-            );
-        } else {
-            let radius = ((3.0 / (4.0 * std::f64::consts::PI))
-                * p.target_volume as f64)
-                .powf(1.0 / 3.0);
-            place_cells_spheres(
-                &mut sim.grid,
-                p.grid_w, p.grid_h, p.grid_d,
-                p.n_cells, radius,
-            );
-        }
-
-        sim.recompute_stats();
-        sim
+        Self::build(p, cells)
     }
 
+    /// Flat init: all cells get exactly `p.target_volume` (ignores `volume_sigma`).
+    pub fn new_with_flat(p: Params) -> Self {
+        let tv = p.target_volume;
+        let ts = compute_surface_from_volume(tv as f64) as i64;
+        let cells: Vec<CellState> = (0..=p.n_cells)
+            .map(|k| {
+                let mut c = CellState::new(k as u32, tv, ts);
+                if k == 0 { c.alive = false; }
+                c
+            })
+            .collect();
+        Self::build(p, cells)
+    }
+
+    /// Empty init: cells start with zero lipid and the minimum viable volume (4).
+    /// Use this when the lipid content drives target-volume growth from scratch.
+    pub fn new_empty(p: Params) -> Self {
+        let cells: Vec<CellState> = (0..=p.n_cells)
+            .map(|k| {
+                let mut c = CellState::new_empty(k as u32);
+                if k == 0 { c.alive = false; }
+                c
+            })
+            .collect();
+        Self::build(p, cells)
+    }
+    #[inline]
+    pub fn grid_set(&mut self, sigma: u32, x: usize, y: usize, z: usize)  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        self.grid[z * w * h + y * w + x] = sigma;
+    }
+    #[inline]
+    pub fn grid_get(&self, x: usize, y: usize, z: usize) -> u32  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        self.grid[z * w * h + y * w + x]
+    }
+
+    #[inline]
+    pub fn in_grid(&self, sigma: u32, x: usize, y: usize, z: usize) -> bool  {
+        let w = self.p.grid_w;
+        let h = self.p.grid_h;
+        let d = self.p.grid_d;
+        x > 0 && x < w && y > 0 && y < h && z > 0 && z < d
+    }
     pub fn from_save(s: SaveState) -> Self {
         let mcs_size = s.params.mcs_per_step
             .unwrap_or(s.params.grid_w * s.params.grid_h * s.params.grid_d);
         fs::create_dir_all(&s.params.out_dir).expect("cannot create out_dir");
+        let rng = seeded_rng(s.params.seed, 1);
         Self {
             p: s.params,
             mcs: s.mcs,
             grid: s.grid,
             cells: s.cells,
-            mcs_size,
-            rng: StdRng::from_entropy(),
+            cell_back_log:0,
+            mcs_size: mcs_size,
+            rng:rng,
         }
     }
 
@@ -264,7 +317,8 @@ impl Cpm3d {
 
     // ── Monte Carlo step ──────────────────────────────────────────────────────
 
-    fn attempt(&mut self) {
+    /// Returns `Some((s_old, s_new))` when the copy was accepted, `None` otherwise.
+    fn attempt(&mut self) -> Option<(u32, u32)> {
         let (w, h, d) = (self.p.grid_w, self.p.grid_h, self.p.grid_d);
 
         let x = self.rng.gen_range(0..w);
@@ -284,7 +338,7 @@ impl Cpm3d {
             let nb = self.grid[nz as usize * w * h + ny as usize * w + nx as usize];
             if nb != s_old { candidates.push(nb); }
         }
-        if candidates.is_empty() { return; }
+        if candidates.is_empty() { return None; }
 
         let s_new = candidates[self.rng.gen_range(0..candidates.len())];
 
@@ -292,7 +346,7 @@ impl Cpm3d {
         let dh_vol  = self.delta_h_volume(s_old, s_new);
         let (dh_surf, ds_old, ds_new) = self.delta_h_surface_with_ds(x, y, z, s_old, s_new);
         let dh_sph  = self.delta_h_sphericity(s_old, s_new, ds_old, ds_new);
-        
+
         let dh = dh_adh + dh_vol + dh_surf + dh_sph;
         let accept = dh <= 0.0
             || self.rng.gen_range(0.0f64..1.0) < (-dh / self.p.temperature).exp();
@@ -307,12 +361,50 @@ impl Cpm3d {
                 self.cells[s_new as usize].volume  += 1;
                 self.cells[s_new as usize].surface += ds_new;
             }
+            Some((s_old, s_new))
+        } else {
+            None
         }
     }
 
     pub fn run_mcs(&mut self) {
         for _ in 0..self.mcs_size { self.attempt(); }
         self.mcs += 1;
+    }
+
+    /// Like `run_mcs` but returns one `Grow`/`Shrink` event per accepted copy attempt
+    /// where a real cell (sigma > 0) gained or lost a voxel.
+    pub fn run_mcs_tracked(&mut self) -> Vec<DemographyEvent> {
+        let mut events = Vec::new();
+        for _ in 0..self.mcs_size {
+            if let Some((s_old, s_new)) = self.attempt() {
+                let mcs = self.mcs;
+                if s_old > 0 {
+                    let c = &self.cells[s_old as usize];
+                    events.push(DemographyEvent {
+                        kind: EventKind::Shrink,
+                        sigma: s_old,
+                        mcs,
+                        volume_at_event: c.volume,
+                        birth_mcs: c.birth_mcs,
+                        lifetime_mcs: mcs.saturating_sub(c.birth_mcs),
+                    });
+                }
+                if s_new > 0 {
+                    let c = &self.cells[s_new as usize];
+                    events.push(DemographyEvent {
+                        kind: EventKind::Grow,
+                        sigma: s_new,
+                        mcs,
+                        volume_at_event: c.volume,
+                        birth_mcs: c.birth_mcs,
+                        lifetime_mcs: mcs.saturating_sub(c.birth_mcs),
+                    });
+                }
+            }
+        }
+        self.mcs += 1;
+        events
     }
 
     // ── Console summary ───────────────────────────────────────────────────────

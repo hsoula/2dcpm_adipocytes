@@ -1,22 +1,24 @@
-//! Volume analysis over a 3-D CPM simulation run.
+//! Per-cell analysis over a 3-D CPM simulation run.
 //!
-//! Reads every `state_mcs*.json` file in the given directory (sorted by MCS),
-//! and writes two CSV files next to the snapshots:
+//! Reads every `state_mcs*.json` file in the given directory (sorted by MCS)
+//! and writes two CSV files:
 //!
-//!   volume_timeseries.csv   — one row per alive cell per snapshot
-//!                             columns: mcs, sigma, volume, surface, target_volume
+//!   cells.csv           — one row per alive cell per snapshot
+//!                         mcs, sigma, volume, surface, target_volume, target_surface,
+//!                         lipid, dying, birth_mcs, vol_ratio
 //!
-//!   volume_distribution.csv — one row per snapshot, summary statistics
-//!                             columns: mcs, n_cells, mean_vol, std_vol, min_vol, max_vol
+//!   population.csv      — one row per snapshot, population-level summary
+//!                         mcs, n_cells, mean_vol, std_vol, min_vol, max_vol,
+//!                         mean_lipid, total_lipid
 //!
 //! Usage
 //! -----
-//!   cargo run --bin analyze -- --dir data/sim3d/
+//!   cargo run --bin analyze -- --dir data/sim3d_42_g1_d0.02_b0.01/
 
 use std::fs;
 use std::path::PathBuf;
 use clap::Parser;
-use cpm3d::grid::{cell_centroids, SaveState};
+use cpm3d::grid::SaveState;
 
 #[derive(Parser)]
 struct Cli {
@@ -41,7 +43,7 @@ fn main() {
         })
         .collect();
 
-    files.sort();  // lexicographic sort == MCS order since filenames are zero-padded
+    files.sort();
 
     if files.is_empty() {
         eprintln!("No state_mcs*.json files found in {:?}", cli.dir);
@@ -50,12 +52,14 @@ fn main() {
 
     println!("Found {} snapshots in {:?}", files.len(), cli.dir);
 
-    // ── Output file handles ───────────────────────────────────────────────────
-    let ts_path   = cli.dir.join("volume_timeseries.csv");
-    let dist_path = cli.dir.join("volume_distribution.csv");
-
-    let mut ts_rows   = vec!["mcs,sigma,volume,surface,target_volume,ratio,cent_x,cent_y,cent_z".to_string()];
-    let mut dist_rows = vec!["mcs,n_cells,mean_vol,std_vol,min_vol,max_vol".to_string()];
+    // ── Output buffers ────────────────────────────────────────────────────────
+    let mut cell_rows = vec![
+        "mcs,sigma,volume,surface,target_volume,target_surface,lipid,dying,birth_mcs,vol_ratio"
+            .to_string(),
+    ];
+    let mut pop_rows = vec![
+        "mcs,n_cells,mean_vol,std_vol,min_vol,max_vol,mean_lipid,total_lipid".to_string(),
+    ];
 
     // ── Parse each snapshot ───────────────────────────────────────────────────
     for path in &files {
@@ -66,28 +70,49 @@ fn main() {
 
         let mcs = state.mcs;
 
-        // Alive, non-medium cells
+        // All non-medium cells that are alive (includes dying — they still exist)
         let alive: Vec<_> = state.cells.iter()
             .filter(|c| c.id > 0 && c.alive)
             .collect();
-        let centroids = cell_centroids(&state.grid, state.params.grid_h, state.params.grid_w,state.params.grid_d, state.params.n_cells + 1);
+
         // Per-cell rows
-        for (k,c) in alive.iter().enumerate() {
-            let v = centroids[c.id  as usize ];
-            ts_rows.push(format!("{},{},{},{},{},{},{},{},{}", mcs, c.id, c.volume, c.surface, c.target_volume,(c.volume as f64)/(c.target_volume as f64),v[0], v[1], v[2]));
+        for c in &alive {
+            let vol_ratio = if c.target_volume > 0 {
+                c.volume as f64 / c.target_volume as f64
+            } else {
+                0.0
+            };
+            cell_rows.push(format!(
+                "{},{},{},{},{},{},{:.6},{},{},{:.4}",
+                mcs, c.id,
+                c.volume, c.surface,
+                c.target_volume, c.target_surface,
+                c.lipid,
+                c.dying as u8,
+                c.birth_mcs,
+                vol_ratio,
+            ));
         }
 
-        // Distribution summary
-        if alive.is_empty() {
-            dist_rows.push(format!("{},0,0,0,0,0", mcs));
+        // Population summary (non-dying cells for volume stats)
+        let active: Vec<_> = alive.iter().filter(|c| !c.dying).collect();
+        if active.is_empty() {
+            pop_rows.push(format!("{},0,0,0,0,0,0,0", mcs));
         } else {
-            let vols: Vec<f64> = alive.iter().map(|c| c.volume as f64).collect();
-            let n    = vols.len() as f64;
-            let mean = vols.iter().sum::<f64>() / n;
-            let std  = (vols.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
-            let min  = vols.iter().cloned().fold(f64::INFINITY, f64::min) as i64;
-            let max  = vols.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as i64;
-            dist_rows.push(format!("{},{},{:.2},{:.2},{},{}", mcs, alive.len(), mean, std, min, max));
+            let n         = active.len() as f64;
+            let vols: Vec<f64> = active.iter().map(|c| c.volume as f64).collect();
+            let mean_vol  = vols.iter().sum::<f64>() / n;
+            let std_vol   = (vols.iter().map(|v| (v - mean_vol).powi(2)).sum::<f64>() / n).sqrt();
+            let min_vol   = vols.iter().cloned().fold(f64::INFINITY,     f64::min) as i64;
+            let max_vol   = vols.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as i64;
+            let total_lip = active.iter().map(|c| c.lipid).sum::<f64>();
+            let mean_lip  = total_lip / n;
+            pop_rows.push(format!(
+                "{},{},{:.2},{:.2},{},{},{:.4},{:.4}",
+                mcs, active.len(),
+                mean_vol, std_vol, min_vol, max_vol,
+                mean_lip, total_lip,
+            ));
         }
 
         print!("  MCS {:6}  cells={}\r", mcs, alive.len());
@@ -95,9 +120,10 @@ fn main() {
     println!();
 
     // ── Write CSVs ────────────────────────────────────────────────────────────
-    fs::write(&ts_path,   ts_rows.join("\n")   + "\n").expect("cannot write timeseries csv");
-    fs::write(&dist_path, dist_rows.join("\n") + "\n").expect("cannot write distribution csv");
-
-    println!("→ {:?}", ts_path);
-    println!("→ {:?}", dist_path);
+    let cell_path = cli.dir.join("cells.csv");
+    let pop_path  = cli.dir.join("population.csv");
+    fs::write(&cell_path, cell_rows.join("\n") + "\n").expect("cannot write cells.csv");
+    fs::write(&pop_path,  pop_rows.join("\n")  + "\n").expect("cannot write population.csv");
+    println!("→ {:?}  ({} cell rows)", cell_path,  cell_rows.len() - 1);
+    println!("→ {:?}  ({} mcs rows)",  pop_path,   pop_rows.len()  - 1);
 }

@@ -1,169 +1,229 @@
 #!/usr/bin/env python3
 """
-plot_cell_growth.py — per-cell volume growth tracking for cpm3d
-----------------------------------------------------------------
-Reads the JSON state files produced by `simulate` (state_mcs*.json)
-and plots per-cell volume trajectories over time.
+plot_cell_growth.py — cell growth analysis for cpm3d
+-----------------------------------------------------
+Reads  cells.csv  produced by `cargo run --bin analyze`
+and saves two figures:
 
-Usage:
-    python analysis/plot_cell_growth.py data/sim3d/ [--out figure.png]
+  cell_growth.png          — actual & target volume trajectories per cell
+                             with population mean ± 1 SD overlay
+
+  growth_speed_vs_r.png    — instantaneous growth speed dV/dt (central
+                             finite differences over adjacent snapshots)
+                             plotted as a function of spherical radius r,
+                             one point per cell per time step, with a
+                             binned mean ± 1 SD curve
+
+Usage
+-----
+  python analysis/plot_cell_growth.py <dir>
+  python analysis/plot_cell_growth.py <dir> --out figures/
+  python analysis/plot_cell_growth.py <dir> --r-bins 30 --min-points 4
 """
 
 import argparse
-import json
-import glob
-import os
+import sys
+from pathlib import Path
 from collections import defaultdict
 
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-import numpy as np
 
 
-# ── I/O ──────────────────────────────────────────────────────────────────────
+# ── Geometry ──────────────────────────────────────────────────────────────────
 
-def load_states(data_dir: str) -> list[dict]:
-    """Load all state_mcs*.json files from data_dir, sorted by MCS."""
-    pattern = os.path.join(data_dir.rstrip("/"), "state_mcs*.json")
-    files = sorted(glob.glob(pattern))
-    if not files:
-        raise FileNotFoundError(f"No state_mcs*.json files found in {data_dir!r}")
+def vol_to_radius(v):
+    """Spherical approximation: r = (3V / 4π)^(1/3)"""
+    v = np.asarray(v, dtype=float)
+    return np.cbrt(3.0 * v / (4.0 * np.pi))
+
+
+# ── Speed computation ─────────────────────────────────────────────────────────
+
+def compute_speeds(df: pd.DataFrame, min_points: int = 3) -> pd.DataFrame:
+    """
+    For each continuous cell track (sigma × birth_mcs), compute the
+    instantaneous growth speed at every interior snapshot using central
+    finite differences:
+
+        speed[i] = (V[i+1] - V[i-1]) / (mcs[i+1] - mcs[i-1])
+
+    Returns a DataFrame with columns:
+        sigma, mcs, volume, radius, speed
+    """
     records = []
-    for f in files:
-        with open(f) as fh:
-            records.append(json.load(fh))
-    return sorted(records, key=lambda r: r["mcs"])
+    for (sigma, birth_mcs), track in df.groupby(["sigma", "birth_mcs"], sort=False):
+        track = track.sort_values("mcs")
+        mcs = track["mcs"].to_numpy(dtype=float)
+        vol = track["volume"].to_numpy(dtype=float)
+        if len(mcs) < min_points:
+            continue
+        dt    = mcs[2:] - mcs[:-2]          # denominator: 2*Δt
+        dv    = vol[2:] - vol[:-2]
+        speed = np.where(dt > 0, dv / dt, np.nan)
+        r     = vol_to_radius(vol[1:-1])
+        for i in range(len(speed)):
+            records.append({
+                "sigma":  sigma,
+                "mcs":    mcs[1:-1][i],
+                "volume": vol[1:-1][i],
+                "radius": r[i],
+                "speed":  speed[i],
+            })
+    return pd.DataFrame(records) if records else pd.DataFrame(
+        columns=["sigma", "mcs", "volume", "radius", "speed"]
+    )
 
 
-# ── Trajectory extraction ─────────────────────────────────────────────────────
+# ── Figure 1: volume trajectories ────────────────────────────────────────────
 
-def extract_trajectories(records: list[dict]):
-    """
-    Returns
-    -------
-    mcs_per_cell  : dict[int, list[int]]   cell_id -> MCS values
-    vol_per_cell  : dict[int, list[int]]   cell_id -> actual volumes
-    tvol_per_cell : dict[int, list[int]]   cell_id -> target volumes
-    """
-    mcs_per_cell  = defaultdict(list)
-    vol_per_cell  = defaultdict(list)
-    tvol_per_cell = defaultdict(list)
+def plot_trajectories(df: pd.DataFrame, out_path: Path):
+    """Actual volume + target volume per cell, with mean ± SD."""
+    tracks = df.groupby(["sigma", "birth_mcs"])
+    n_tracks = len(tracks)
 
-    for rec in records:
-        mcs = rec["mcs"]
-        for cs in rec.get("cells", []):
-            cid = cs["id"]
-            if cid == 0 or not cs.get("alive", True):
-                continue
-            mcs_per_cell[cid].append(mcs)
-            vol_per_cell[cid].append(cs["volume"])
-            tvol_per_cell[cid].append(cs["target_volume"])
+    fig, (ax_v, ax_tv) = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+    cmap = cm.get_cmap("tab20", max(n_tracks, 1))
 
-    return mcs_per_cell, vol_per_cell, tvol_per_cell
+    for i, ((sigma, bm), track) in enumerate(sorted(tracks)):
+        track = track.sort_values("mcs")
+        c = cmap(i % 20)
+        ax_v.plot(track["mcs"], track["volume"],
+                  color=c, lw=0.9, alpha=0.5)
+        ax_tv.plot(track["mcs"], track["target_volume"],
+                   color=c, lw=0.9, alpha=0.5, ls="--")
 
+    # Population mean ± SD at each MCS (non-dying cells only)
+    g_v  = df.groupby("mcs")["volume"]
+    g_tv = df.groupby("mcs")["target_volume"]
+    t    = g_v.mean().index.to_numpy()
 
-# ── Plotting ──────────────────────────────────────────────────────────────────
+    for ax, g, label in [(ax_v, g_v, "actual volume"),
+                         (ax_tv, g_tv, "target volume")]:
+        mean = g.mean().to_numpy()
+        std  = g.std().fillna(0).to_numpy()
+        ax.plot(t, mean, color="black", lw=2.2, zorder=5, label="mean")
+        ax.fill_between(t, mean - std, mean + std,
+                        color="black", alpha=0.12, label="±1 SD")
+        ax.set_ylabel(f"{label.capitalize()} (voxels)", fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9, loc="upper left")
 
-def plot_growth(
-    mcs_per_cell: dict,
-    vol_per_cell: dict,
-    tvol_per_cell: dict,
-    out_path: str,
-):
-    n_cells = len(vol_per_cell)
-    if n_cells == 0:
-        print("No live cells found.")
-        return
-
-    fig, (ax_vol, ax_tvol) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    cmap = cm.get_cmap("tab20", max(n_cells, 1))
-
-    for i, cid in enumerate(sorted(vol_per_cell.keys())):
-        color = cmap(i / max(n_cells - 1, 1))
-        ax_vol.plot(mcs_per_cell[cid], vol_per_cell[cid],
-                    color=color, lw=1.2, label=f"cell {cid}")
-        ax_tvol.plot(mcs_per_cell[cid], tvol_per_cell[cid],
-                     color=color, lw=1.0, ls="--")
-
-    # Ensemble mean ± std
-    all_mcs = sorted({m for v in mcs_per_cell.values() for m in v})
-    vol_at   = defaultdict(list)
-    tvol_at  = defaultdict(list)
-    for cid in vol_per_cell:
-        for t, v, tv in zip(mcs_per_cell[cid], vol_per_cell[cid], tvol_per_cell[cid]):
-            vol_at[t].append(v)
-            tvol_at[t].append(tv)
-
-    ts      = [t for t in all_mcs if vol_at[t]]
-    mean_v  = np.array([np.mean(vol_at[t])  for t in ts])
-    std_v   = np.array([np.std(vol_at[t])   for t in ts])
-    mean_tv = np.array([np.mean(tvol_at[t]) for t in ts])
-    std_tv  = np.array([np.std(tvol_at[t])  for t in ts])
-
-    ax_vol.plot(ts, mean_v, color="black", lw=2.2, label="mean", zorder=5)
-    ax_vol.fill_between(ts, mean_v - std_v, mean_v + std_v,
-                        color="black", alpha=0.12, label="±1 std")
-
-    ax_tvol.plot(ts, mean_tv, color="black", lw=2.2, ls="--", zorder=5)
-    ax_tvol.fill_between(ts, mean_tv - std_tv, mean_tv + std_tv,
-                         color="black", alpha=0.12)
-
-    ax_vol.set_ylabel("Volume (voxels)", fontsize=11)
-    ax_vol.set_title("Per-cell volume trajectories", fontsize=12)
-    #ax_vol.legend(fontsize=7, ncol=min(4, max(1, n_cells // 5 + 1)),
-    #              loc="upper left", framealpha=0.7)
-    ax_vol.grid(True, alpha=0.3)
-
-    ax_tvol.set_ylabel("Target volume (voxels)", fontsize=11)
-    ax_tvol.set_xlabel("MCS", fontsize=11)
-    ax_tvol.set_title("Per-cell target volume (dashed) trajectories", fontsize=12)
-    ax_tvol.grid(True, alpha=0.3)
-
+    ax_v.set_title(f"Volume trajectories  ({n_tracks} cell tracks)", fontsize=12)
+    ax_tv.set_xlabel("MCS", fontsize=11)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
-    print(f"Saved: {out_path}")
     plt.close(fig)
+    print(f"→ {out_path}")
 
 
-# ── Summary table ─────────────────────────────────────────────────────────────
+# ── Figure 2: growth speed vs radius ─────────────────────────────────────────
 
-def print_summary(mcs_per_cell, vol_per_cell, tvol_per_cell):
-    print(f"\n{'─'*65}")
-    print(f"{'cell':>6}  {'n_pts':>5}  {'tv_init':>8}  "
-          f"{'v_init':>8}  {'v_final':>8}  {'Δv':>8}")
-    print(f"{'─'*65}")
-    for cid in sorted(vol_per_cell.keys()):
-        vs   = vol_per_cell[cid]
-        tvs  = tvol_per_cell[cid]
-        if not vs:
+def plot_speed_vs_radius(speed_df: pd.DataFrame, out_path: Path, n_bins: int = 20):
+    """
+    Scatter of (radius, dV/dt) for every cell × time point,
+    overlaid with a binned mean ± 1 SD curve.
+    """
+    sd = speed_df.dropna(subset=["speed"])
+    if sd.empty:
+        print("No speed data — skipping growth_speed_vs_r.png")
+        return
+
+    r     = sd["radius"].to_numpy()
+    speed = sd["speed"].to_numpy()
+
+    # Colour by sigma so each cell gets its own hue
+    sigmas      = sd["sigma"].to_numpy()
+    unique_sigs = np.unique(sigmas)
+    cmap        = cm.get_cmap("tab20", len(unique_sigs))
+    sig_idx     = {s: i for i, s in enumerate(unique_sigs)}
+    colours     = [cmap(sig_idx[s] % 20) for s in sigmas]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.scatter(r, speed, c=colours, alpha=0.25, s=8, linewidths=0,
+               label="per-cell point")
+
+    # Binned mean ± SD
+    edges   = np.linspace(r.min(), r.max(), n_bins + 1)
+    centres, means, stds, counts = [], [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (r >= lo) & (r < hi)
+        sub  = speed[mask]
+        if len(sub) < 3:
             continue
-        dv = vs[-1] - vs[0] if len(vs) > 1 else 0
-        print(f"{cid:>6}  {len(vs):>5}  {tvs[0]:>8}  "
-              f"{vs[0]:>8}  {vs[-1]:>8}  {dv:>+8}")
-    print(f"{'─'*65}\n")
+        centres.append((lo + hi) / 2)
+        means.append(sub.mean())
+        stds.append(sub.std())
+        counts.append(len(sub))
+
+    if centres:
+        c_arr = np.array(centres)
+        m_arr = np.array(means)
+        s_arr = np.array(stds)
+        ax.plot(c_arr, m_arr, color="crimson", lw=2.2, zorder=5,
+                label="binned mean")
+        ax.fill_between(c_arr, m_arr - s_arr, m_arr + s_arr,
+                        color="crimson", alpha=0.20, label="±1 SD")
+
+    ax.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+    ax.set_xlabel(r"Radius  $r = \left(\frac{3V}{4\pi}\right)^{1/3}$  (voxels)",
+                  fontsize=12)
+    ax.set_ylabel(r"Growth speed  $\mathrm{d}V/\mathrm{d}t$  (voxels / MCS)",
+                  fontsize=12)
+    ax.set_title(f"Growth speed vs cell radius  "
+                 f"({len(sd)} points, {len(unique_sigs)} cells)",
+                 fontsize=12)
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"→ {out_path}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Plot per-cell volume growth from cpm3d state JSON files")
-    parser.add_argument("data_dir",
-                        help="Directory containing state_mcs*.json files")
-    parser.add_argument("--out", default=None,
-                        help="Output figure path (default: <data_dir>/cell_growth.png)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(
+        description="Plot cell growth trajectories and growth speed vs radius")
+    ap.add_argument("data_dir",
+                    help="Directory containing cells.csv (output of 'cargo run --bin analyze')")
+    ap.add_argument("--out", default=None,
+                    help="Output directory for figures (default: same as data_dir)")
+    ap.add_argument("--min-points", type=int, default=3,
+                    help="Min snapshots per track required for speed estimates (default: 3)")
+    ap.add_argument("--r-bins", type=int, default=20,
+                    help="Number of radius bins for the mean speed curve (default: 20)")
+    args = ap.parse_args()
 
-    records = load_states(args.data_dir)
-    print(f"Loaded {len(records)} snapshots, "
-          f"MCS {records[0]['mcs']}–{records[-1]['mcs']}")
+    data_dir = Path(args.data_dir)
+    out_dir  = Path(args.out) if args.out else data_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    mcs_pc, vol_pc, tvol_pc = extract_trajectories(records)
+    csv_path = data_dir / "cells.csv"
+    if not csv_path.exists():
+        sys.exit(f"Error: {csv_path} not found — run 'cargo run --bin analyze -- --dir {data_dir}' first")
 
-    print_summary(mcs_pc, vol_pc, tvol_pc)
+    df = pd.read_csv(csv_path)
+    df = df[(df["dying"] == 0) & (df["volume"] > 0)].copy()
+    if df.empty:
+        sys.exit("No usable cell rows in cells.csv")
 
-    out_path = args.out or os.path.join(args.data_dir.rstrip("/"), "cell_growth.png")
-    plot_growth(mcs_pc, vol_pc, tvol_pc, out_path)
+    print(f"Loaded {len(df)} cell-snapshot rows  "
+          f"({df['sigma'].nunique()} unique sigmas, "
+          f"{df['mcs'].nunique()} snapshots)")
+
+    # ── Figure 1 ─────────────────────────────────────────────────────────────
+    plot_trajectories(df, out_dir / "cell_growth.png")
+
+    # ── Figure 2 ─────────────────────────────────────────────────────────────
+    speed_df = compute_speeds(df, min_points=args.min_points)
+    plot_speed_vs_radius(speed_df, out_dir / "growth_speed_vs_r.png",
+                         n_bins=args.r_bins)
 
 
 if __name__ == "__main__":
