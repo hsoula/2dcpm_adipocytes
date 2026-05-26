@@ -48,8 +48,12 @@ fn main() {
         .collect();
     subdirs.sort();
 
-    let mut vol_rows = vec![
-        "seed,grow_rate,death_rate,birth_rate,mcs,n_cells,mean_vol,std_vol,min_vol,max_vol"
+    let mut pop_rows = vec![
+        "seed,grow_rate,death_rate,birth_rate,mcs,n_cells,mean_vol,std_vol,min_vol,max_vol,mean_lipid,total_lipid"
+            .to_string(),
+    ];
+    let mut cell_rows = vec![
+        "seed,grow_rate,death_rate,birth_rate,mcs,sigma,volume,surface,target_volume,target_surface,lipid,dying,birth_mcs,vol_ratio"
             .to_string(),
     ];
     let mut evt_rows = vec![
@@ -64,26 +68,21 @@ fn main() {
         n_matched += 1;
         let prefix = format!("{},{},{},{}", seed, grow, death, birth);
 
-        let vol_path = dir.join("volume_distribution.csv");
-        match fs::read_to_string(&vol_path) {
-            Ok(content) => {
-                for (i, line) in content.lines().enumerate() {
-                    if i == 0 || line.trim().is_empty() { continue; }
-                    vol_rows.push(format!("{},{}", prefix, line));
+        for (filename, rows, label) in [
+            ("population.csv", &mut pop_rows,  "population.csv"),
+            ("cells.csv",      &mut cell_rows, "cells.csv"),
+            ("events.csv",     &mut evt_rows,  "events.csv"),
+        ] {
+            let path = dir.join(filename);
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    for (i, line) in content.lines().enumerate() {
+                        if i == 0 || line.trim().is_empty() { continue; }
+                        rows.push(format!("{},{}", prefix, line));
+                    }
                 }
+                Err(_) => eprintln!("  [skip] no {label} in {dirname}"),
             }
-            Err(_) => eprintln!("  [skip] no volume_distribution.csv in {dirname}  (run analyze first)"),
-        }
-
-        let evt_path = dir.join("events.csv");
-        match fs::read_to_string(&evt_path) {
-            Ok(content) => {
-                for (i, line) in content.lines().enumerate() {
-                    if i == 0 || line.trim().is_empty() { continue; }
-                    evt_rows.push(format!("{},{}", prefix, line));
-                }
-            }
-            Err(_) => eprintln!("  [skip] no events.csv in {dirname}"),
         }
     }
 
@@ -97,10 +96,13 @@ fn main() {
 
     println!("Matched {} sweep directories.", n_matched);
 
-    let vol_out = base.join("sweep_volumes.csv");
-    let evt_out = base.join("sweep_events.csv");
-    fs::write(&vol_out, vol_rows.join("\n") + "\n").expect("cannot write sweep_volumes.csv");
-    fs::write(&evt_out, evt_rows.join("\n") + "\n").expect("cannot write sweep_events.csv");
-    println!("→ {:?}  ({} data rows)", vol_out, vol_rows.len() - 1);
-    println!("→ {:?}  ({} events)",    evt_out, evt_rows.len() - 1);
+    let pop_out  = base.join("sweep_population.csv");
+    let cell_out = base.join("sweep_cells.csv");
+    let evt_out  = base.join("sweep_events.csv");
+    fs::write(&pop_out,  pop_rows.join("\n")  + "\n").expect("cannot write sweep_population.csv");
+    fs::write(&cell_out, cell_rows.join("\n") + "\n").expect("cannot write sweep_cells.csv");
+    fs::write(&evt_out,  evt_rows.join("\n")  + "\n").expect("cannot write sweep_events.csv");
+    println!("→ {:?}  ({} rows)", pop_out,  pop_rows.len()  - 1);
+    println!("→ {:?}  ({} rows)", cell_out, cell_rows.len() - 1);
+    println!("→ {:?}  ({} rows)", evt_out,  evt_rows.len()  - 1);
 }

@@ -12,10 +12,10 @@ use crate::params::Params;
 /// Build a seeded RNG (stream offset avoids init/sim correlation).
 /// `stream=0` for init sampling, `stream=1` for the main simulation RNG.
 fn seeded_rng(seed: Option<u64>, stream: u64) -> StdRng {
-    match seed {
-        Some(s) => StdRng::seed_from_u64(s.wrapping_add(stream)),
-        None    => StdRng::from_entropy(),
-    }
+        match seed {
+            Some(s) => StdRng::seed_from_u64(s.wrapping_add(stream)),
+            None    => StdRng::from_entropy(),
+        }
 }
 
 pub fn compute_surface_from_volume(volume: f64) -> f64 {

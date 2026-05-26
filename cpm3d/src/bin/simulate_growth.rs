@@ -1,5 +1,10 @@
-//! 3-D CPM simulation.
-//! cargo run --bin simulate_life -- --n-cells 8 --steps 1000 --out-dir data/life
+// 3-D CPM simulation.
+// cargo run --release --bin simulate_growth \
+// -- --grid    -w 60 --grid-h 60 --grid-d 60 \
+// --target-volume 160 --volume-sigma 100  \
+// --n-cells 2450 --lv 2.0 --ls 0.01 --li 0.01  \
+// --steps 10 --out-dir data/sim3d/growth --save-every 100 \
+// --death-rate 0.0 --birth-rate 0.0 --grow-rate 0.001 --seed 1917
 
 use std::fs;
 use std::path::Path;
@@ -36,11 +41,9 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
- 
+
     let seed_str = cli.seed.map(|s| s.to_string()).unwrap_or_else(|| "rand".to_string());
-    let dir = format!("{}_s{}_g{}_d{}_b{}",
-        cli.out_dir.trim_end_matches('/'), seed_str,
-        cli.grow_rate, cli.death_rate, cli.birth_rate);
+    let dir = format!("{}", cli.out_dir.trim_end_matches('/'));
     fs::create_dir_all(&dir).unwrap();
     fs::create_dir_all(format!("{}/events/", &dir)).unwrap();
 
@@ -118,7 +121,7 @@ fn main() {
 
         if cli.png_every > 0 && (sim.mcs % cli.png_every == 0 || is_last) {
             let (w, h, d) = (sim.p.grid_w, sim.p.grid_h, sim.p.grid_d);
-            let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.png",
+             let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.png",
                                          sim.p.out_dir.trim_end_matches('/'), ax, sim.mcs);
             sim.save_slice_png(0, d / 2, &tag("xy"));
             sim.save_slice_png(1, h / 2, &tag("xz"));

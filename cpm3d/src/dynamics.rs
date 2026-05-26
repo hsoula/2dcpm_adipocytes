@@ -68,7 +68,8 @@ impl Cpm3d {
         //if rate == 0 { return; }
         for cell in self.cells.iter_mut() {
             if cell.id == 0 || !cell.alive || cell.dying { continue; }
-            cell.lipid += rate;
+            // NEW addition of surface based growth
+            cell.lipid += rate * (cell.surface as f64);
             cell.target_volume  = cell.lipid as i64 + MIN_VOL;
             cell.target_surface = compute_surface_from_volume(cell.target_volume as f64) as i64;
         }
