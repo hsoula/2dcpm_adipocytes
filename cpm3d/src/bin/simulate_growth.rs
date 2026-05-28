@@ -97,6 +97,8 @@ fn main() {
                     EventKind::Birth => "birth",
                     EventKind::Dead => "death",
                     EventKind::Dying => "dying",
+                    EventKind::Grow => "growth",
+                    EventKind::Shrink => "shrink",
                 };
                 writeln!(
                     events_csv,

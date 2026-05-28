@@ -60,13 +60,15 @@ pub struct SaveState {
 // ── Simulation ────────────────────────────────────────────────────────────────
 
 pub struct Cpm3d {
-    pub p:        Params,
-    pub mcs:      usize,
-    pub grid:     Vec<u32>,
-    pub cells:    Vec<CellState>,
-    pub mcs_size: usize,
-    pub cell_back_log : i64,
-    pub rng:      StdRng,
+    pub p:           Params,
+    pub mcs:         usize,
+    pub grid:        Vec<u32>,
+    pub cells:       Vec<CellState>,
+    pub mcs_size:    usize,
+    pub cell_back_log: i64,
+    pub rng:         StdRng,
+    /// Pre-allocated index buffer [0, W*H*D); shuffled in-place each MCS.
+    shuffle_buf:     Vec<usize>,
 }
 
 impl Cpm3d {
@@ -75,14 +77,16 @@ impl Cpm3d {
     /// Shared tail: create the struct, place spherical seeds, recompute stats.
     /// `cells` must already be fully populated (index 0 = medium, alive=false).
     fn build(p: Params, cells: Vec<CellState>) -> Self {
-        let mcs_size = p.mcs_per_step.unwrap_or(p.grid_w * p.grid_h * p.grid_d);
+        let n = p.grid_w * p.grid_h * p.grid_d;
+        let mcs_size = p.mcs_per_step.unwrap_or(n);
         let mut sim = Self {
             mcs_size,
-            grid: vec![0u32; p.grid_w * p.grid_h * p.grid_d],
+            grid: vec![0u32; n],
             cells,
             mcs: 0,
             cell_back_log: 0,
             rng: seeded_rng(p.seed, 1),
+            shuffle_buf: (0..n).collect(),
             p: p.clone(),
         };
         fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
@@ -174,18 +178,19 @@ impl Cpm3d {
         x > 0 && x < w && y > 0 && y < h && z > 0 && z < d
     }
     pub fn from_save(s: SaveState) -> Self {
-        let mcs_size = s.params.mcs_per_step
-            .unwrap_or(s.params.grid_w * s.params.grid_h * s.params.grid_d);
+        let n = s.params.grid_w * s.params.grid_h * s.params.grid_d;
+        let mcs_size = s.params.mcs_per_step.unwrap_or(n);
         fs::create_dir_all(&s.params.out_dir).expect("cannot create out_dir");
         let rng = seeded_rng(s.params.seed, 1);
         Self {
+            mcs_size,
+            shuffle_buf: (0..n).collect(),
             p: s.params,
             mcs: s.mcs,
             grid: s.grid,
             cells: s.cells,
-            cell_back_log:0,
-            mcs_size: mcs_size,
-            rng:rng,
+            cell_back_log: 0,
+            rng,
         }
     }
 
@@ -317,14 +322,15 @@ impl Cpm3d {
 
     // ── Monte Carlo step ──────────────────────────────────────────────────────
 
+    /// Run one Metropolis copy-attempt at the given flat grid index.
     /// Returns `Some((s_old, s_new))` when the copy was accepted, `None` otherwise.
-    fn attempt(&mut self) -> Option<(u32, u32)> {
+    fn attempt_at(&mut self, idx: usize) -> Option<(u32, u32)> {
         let (w, h, d) = (self.p.grid_w, self.p.grid_h, self.p.grid_d);
 
-        let x = self.rng.gen_range(0..w);
-        let y = self.rng.gen_range(0..h);
-        let z = self.rng.gen_range(0..d);
-        let s_old = self.grid[z * w * h + y * w + x];
+        let z   = idx / (w * h);
+        let y   = (idx % (w * h)) / w;
+        let x   = idx % w;
+        let s_old = self.grid[idx];
 
         // Collect Moore-26 neighbours with a different sigma
         let mut candidates: Vec<u32> = Vec::with_capacity(26);
@@ -367,17 +373,26 @@ impl Cpm3d {
         }
     }
 
+    /// Run one MCS: shuffle all W×H×D pixel indices, then visit each exactly once.
     pub fn run_mcs(&mut self) {
-        for _ in 0..self.mcs_size { self.attempt(); }
+        self.shuffle_buf.shuffle(&mut self.rng);
+        // Move the buffer out so `self` is free for attempt_at's &mut borrow.
+        let mut indices = std::mem::take(&mut self.shuffle_buf);
+        for &idx in &indices {
+            self.attempt_at(idx);
+        }
+        self.shuffle_buf = indices;
         self.mcs += 1;
     }
 
     /// Like `run_mcs` but returns one `Grow`/`Shrink` event per accepted copy attempt
     /// where a real cell (sigma > 0) gained or lost a voxel.
     pub fn run_mcs_tracked(&mut self) -> Vec<DemographyEvent> {
+        self.shuffle_buf.shuffle(&mut self.rng);
+        let mut indices = std::mem::take(&mut self.shuffle_buf);
         let mut events = Vec::new();
-        for _ in 0..self.mcs_size {
-            if let Some((s_old, s_new)) = self.attempt() {
+        for &idx in &indices {
+            if let Some((s_old, s_new)) = self.attempt_at(idx) {
                 let mcs = self.mcs;
                 if s_old > 0 {
                     let c = &self.cells[s_old as usize];
@@ -403,6 +418,7 @@ impl Cpm3d {
                 }
             }
         }
+        self.shuffle_buf = indices;
         self.mcs += 1;
         events
     }

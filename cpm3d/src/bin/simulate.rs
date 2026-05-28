@@ -51,7 +51,7 @@ fn main() {
         p.png_every     = cli.png_every;
         p.out_dir       = cli.out_dir.clone();
         p.seed          = cli.seed;
-        Cpm3d::new(p)
+        Cpm3d::new_empty(p)
     };
 
     println!(
