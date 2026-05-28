@@ -14,11 +14,18 @@ and saves two figures:
                              one point per cell per time step, with a
                              binned mean ± 1 SD curve
 
+If  growth_trace.csv  is present (produced by --track-growth in simulate_life),
+a third figure is produced:
+
+  within_mcs_growth.png    — per-cell volume step-function at sub-MCS
+                             resolution; x-axis is mcs + fraction-through-MCS
+
 Usage
 -----
   python analysis/plot_cell_growth.py <dir>
   python analysis/plot_cell_growth.py <dir> --out figures/
   python analysis/plot_cell_growth.py <dir> --r-bins 30 --min-points 4
+  python analysis/plot_cell_growth.py <dir> --mcs-range 10 50
 """
 
 import argparse
@@ -185,6 +192,81 @@ def plot_speed_vs_radius(speed_df: pd.DataFrame, out_path: Path, n_bins: int = 2
     print(f"→ {out_path}")
 
 
+# ── Growth-trace loading and figure ──────────────────────────────────────────
+
+def load_growth_trace(path: Path, mcs_range=None) -> pd.DataFrame:
+    """
+    Load growth_trace.csv (kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs).
+
+    Assigns a continuous time axis:
+        time = mcs + event_local_index / events_in_this_mcs
+    so each MCS maps to [mcs, mcs+1) and events are evenly spread within it.
+    """
+    df = pd.read_csv(path)
+    if mcs_range is not None:
+        lo, hi = mcs_range
+        df = df[(df["mcs"] >= lo) & (df["mcs"] <= hi)]
+    if df.empty:
+        return df
+
+    # fractional position within each MCS (based on row order in the CSV)
+    df = df.reset_index(drop=True)
+    local_idx  = df.groupby("mcs").cumcount()
+    mcs_counts = df.groupby("mcs")["mcs"].transform("count")
+    df["time"] = df["mcs"] + local_idx / mcs_counts
+    return df
+
+
+def plot_within_mcs_growth(gt: pd.DataFrame, out_path: Path):
+    """
+    Step-function volume trace for every cell at sub-MCS resolution.
+
+    Each accepted voxel flip (grow/shrink) is one point; the step connects
+    consecutive events for the same cell, giving true within-MCS dynamics.
+    """
+    if gt.empty:
+        print("growth_trace.csv is empty — skipping within_mcs_growth.png")
+        return
+
+    unique_sigs = sorted(gt["sigma"].unique())
+    cmap = cm.get_cmap("tab20", max(len(unique_sigs), 1))
+    sig_color = {s: cmap(i % 20) for i, s in enumerate(unique_sigs)}
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    for sigma, track in gt.groupby("sigma"):
+        track = track.sort_values("time")
+        c = sig_color[sigma]
+        # drawstyle='steps-post' draws a horizontal segment until the next event
+        ax.plot(track["time"], track["area_at_event"],
+                color=c, lw=0.7, alpha=0.7, drawstyle="steps-post",
+                label=f"σ={sigma}")
+
+    # mark MCS boundaries
+    mcs_vals = np.arange(int(gt["mcs"].min()), int(gt["mcs"].max()) + 2)
+    for m in mcs_vals:
+        ax.axvline(m, color="gray", lw=0.4, ls=":", alpha=0.5)
+
+    ax.set_xlabel("Time  (MCS + fraction through MCS)", fontsize=11)
+    ax.set_ylabel("Actual volume (voxels)", fontsize=11)
+    ax.set_title(
+        f"Within-MCS volume fluctuations  "
+        f"({len(unique_sigs)} cells, "
+        f"{int(gt['mcs'].min())}–{int(gt['mcs'].max())} MCS)",
+        fontsize=12,
+    )
+    ax.grid(True, alpha=0.25)
+
+    # legend only if few cells
+    if len(unique_sigs) <= 12:
+        ax.legend(fontsize=7, ncol=2, loc="upper left")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"→ {out_path}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -198,6 +280,9 @@ def main():
                     help="Min snapshots per track required for speed estimates (default: 3)")
     ap.add_argument("--r-bins", type=int, default=20,
                     help="Number of radius bins for the mean speed curve (default: 20)")
+    ap.add_argument("--mcs-range", type=int, nargs=2, default=None,
+                    metavar=("LO", "HI"),
+                    help="MCS window for within-MCS figure, e.g. --mcs-range 10 50")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -224,6 +309,16 @@ def main():
     speed_df = compute_speeds(df, min_points=args.min_points)
     plot_speed_vs_radius(speed_df, out_dir / "growth_speed_vs_r.png",
                          n_bins=args.r_bins)
+
+    # ── Figure 3: within-MCS growth (optional) ───────────────────────────────
+    gt_path = data_dir / "growth_trace.csv"
+    if gt_path.exists():
+        print(f"Found {gt_path} — loading sub-MCS growth trace …")
+        gt = load_growth_trace(gt_path, mcs_range=args.mcs_range)
+        plot_within_mcs_growth(gt, out_dir / "within_mcs_growth.png")
+    else:
+        print(f"No growth_trace.csv in {data_dir} — skipping within-MCS figure "
+              f"(re-run simulate_life with --track-growth)")
 
 
 if __name__ == "__main__":
