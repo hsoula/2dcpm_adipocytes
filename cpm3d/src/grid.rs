@@ -4,7 +4,7 @@ use rand_distr::{Distribution, Normal};
 use rand_distr::num_traits::Pow;
 use serde::{Deserialize, Serialize};
 
-use crate::cellstate::CellState;
+use crate::cellstate::{CellState, MIN_VOL};
 use crate::energy::{j, delta_volume_loss, delta_volume_gain, delta_surface, delta_sphericity};
 use crate::events::{DemographyEvent, EventKind};
 use crate::init::{place_cells_spheres, place_cells_spheres_individual};
@@ -145,13 +145,25 @@ impl Cpm3d {
         Self::build(p, cells)
     }
 
-    /// Empty init: cells start with zero lipid and the minimum viable volume (4).
-    /// Use this when the lipid content drives target-volume growth from scratch.
+    /// Empty init: cells start with lipid pre-filled so that
+    /// `target_volume = p.target_volume` at t=0.
+    /// When `growth_rate > 0`, `grow_cells` accumulates more lipid each MCS,
+    /// driving `target_volume` above the initial value.
+    /// When `growth_rate == 0`, `target_volume` stays at `p.target_volume`.
     pub fn new_empty(p: Params) -> Self {
+        let tv = p.target_volume;
+        let lipid_init = (tv - MIN_VOL as i64).max(0) as f64;
+        let ts = compute_surface_from_volume(tv as f64) as i64;
         let cells: Vec<CellState> = (0..=p.n_cells)
             .map(|k| {
                 let mut c = CellState::new_empty(k as u32);
-                if k == 0 { c.alive = false; }
+                if k == 0 {
+                    c.alive = false;
+                } else {
+                    c.lipid          = lipid_init;
+                    c.target_volume  = tv;
+                    c.target_surface = ts;
+                }
                 c
             })
             .collect();
