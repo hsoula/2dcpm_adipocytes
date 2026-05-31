@@ -76,7 +76,7 @@ impl Default for Params {
             png_every:  50,
             volume_sigma: 0.0,
             seed: None,
-            small_volume_penalty: 1000f64,
+            small_volume_penalty: 0f64,
             small_volume_n: 1f64,
             growth_rate : 0.001,
             death_rate : 0.01,

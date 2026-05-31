@@ -82,11 +82,26 @@ fn main() {
     writeln!(events_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
         .expect("cannot write events.csv header");
 
+    let path = format!("{}/growth_trace.csv", &dir);
+    let mut growth_csv = fs::File::create(&path).expect("cannot create growth_trace.csv");
+    writeln!(growth_csv, "kind,mcs,sigma,area_at_event,birth_mcs,lifetime_mcs")
+            .expect("cannot write growth_trace.csv header");
+
     sim.print_stats();
     sim.save_state(None);
     while sim.mcs < cli.steps {
-        sim.run_mcs();
+        let growth_events = sim.run_mcs_tracked();
 
+        for ev in &growth_events {
+            let kind_str = match ev.kind {
+                cpm3d::dynamics::EventKind::Grow   => "grow",
+                cpm3d::dynamics::EventKind::Shrink => "shrink",
+                _ => continue,
+            };
+            writeln!(growth_csv, "{},{},{},{},{},{}", kind_str, ev.mcs, ev.sigma,
+                     ev.volume_at_event, ev.birth_mcs, ev.lifetime_mcs)
+                .expect("cannot write growth_trace row");
+        }
         // -- do the demography
         let dem_events = sim.step_demography();
 
@@ -121,14 +136,14 @@ fn main() {
             sim.save_state(None);
         }
 
-        if cli.png_every > 0 && (sim.mcs % cli.png_every == 0 || is_last) {
-            let (w, h, d) = (sim.p.grid_w, sim.p.grid_h, sim.p.grid_d);
-             let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.png",
-                                         sim.p.out_dir.trim_end_matches('/'), ax, sim.mcs);
-            sim.save_slice_png(0, d / 2, &tag("xy"));
-            sim.save_slice_png(1, h / 2, &tag("xz"));
-            sim.save_slice_png(2, w / 2, &tag("yz"));
-        }
+        // if cli.png_every > 0 && (sim.mcs % cli.png_every == 0 || is_last) {
+        //     let (w, h, d) = (sim.p.grid_w, sim.p.grid_h, sim.p.grid_d);
+        //      let tag = |ax: &str| format!("{}/slice_{}_mcs{:06}.png",
+        //                                  sim.p.out_dir.trim_end_matches('/'), ax, sim.mcs);
+        //     sim.save_slice_png(0, d / 2, &tag("xy"));
+        //     sim.save_slice_png(1, h / 2, &tag("xz"));
+        //     sim.save_slice_png(2, w / 2, &tag("yz"));
+        // }
     }
 
     println!("Done. MCS={}", sim.mcs);

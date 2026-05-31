@@ -358,7 +358,7 @@ impl Cpm3d {
             || self.rng.gen_range(0.0f64..1.0) < (-dh / self.p.temperature).exp();
 
         if accept {
-            self.grid[z * w * h + y * w + x] = s_new;
+            self.grid[idx] = s_new;
             if s_old > 0 {
                 self.cells[s_old as usize].volume  -= 1;
                 self.cells[s_old as usize].surface += ds_old;
@@ -376,12 +376,10 @@ impl Cpm3d {
     /// Run one MCS: shuffle all W×H×D pixel indices, then visit each exactly once.
     pub fn run_mcs(&mut self) {
         self.shuffle_buf.shuffle(&mut self.rng);
-        // Move the buffer out so `self` is free for attempt_at's &mut borrow.
-        let mut indices = std::mem::take(&mut self.shuffle_buf);
-        for &idx in &indices {
+        for i in 0..self.shuffle_buf.len() {
+            let idx = self.shuffle_buf[i];
             self.attempt_at(idx);
         }
-        self.shuffle_buf = indices;
         self.mcs += 1;
     }
 
@@ -389,9 +387,9 @@ impl Cpm3d {
     /// where a real cell (sigma > 0) gained or lost a voxel.
     pub fn run_mcs_tracked(&mut self) -> Vec<DemographyEvent> {
         self.shuffle_buf.shuffle(&mut self.rng);
-        let mut indices = std::mem::take(&mut self.shuffle_buf);
         let mut events = Vec::new();
-        for &idx in &indices {
+        for i in 0..self.shuffle_buf.len() {
+            let idx = self.shuffle_buf[i];
             if let Some((s_old, s_new)) = self.attempt_at(idx) {
                 let mcs = self.mcs;
                 if s_old > 0 {
@@ -418,7 +416,6 @@ impl Cpm3d {
                 }
             }
         }
-        self.shuffle_buf = indices;
         self.mcs += 1;
         events
     }
