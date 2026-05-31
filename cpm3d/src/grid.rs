@@ -67,8 +67,6 @@ pub struct Cpm3d {
     pub mcs_size:    usize,
     pub cell_back_log: i64,
     pub rng:         StdRng,
-    /// Pre-allocated index buffer [0, W*H*D); shuffled in-place each MCS.
-    shuffle_buf:     Vec<usize>,
 }
 
 impl Cpm3d {
@@ -86,7 +84,6 @@ impl Cpm3d {
             mcs: 0,
             cell_back_log: 0,
             rng: seeded_rng(p.seed, 1),
-            shuffle_buf: (0..n).collect(),
             p: p.clone(),
         };
         fs::create_dir_all(&sim.p.out_dir).expect("cannot create out_dir");
@@ -196,7 +193,6 @@ impl Cpm3d {
         let rng = seeded_rng(s.params.seed, 1);
         Self {
             mcs_size,
-            shuffle_buf: (0..n).collect(),
             p: s.params,
             mcs: s.mcs,
             grid: s.grid,
@@ -334,15 +330,16 @@ impl Cpm3d {
 
     // ── Monte Carlo step ──────────────────────────────────────────────────────
 
-    /// Run one Metropolis copy-attempt at the given flat grid index.
+    /// Pick one random pixel, choose a random Moore-26 neighbour with a different
+    /// sigma, and accept/reject the copy via Metropolis.
     /// Returns `Some((s_old, s_new))` when the copy was accepted, `None` otherwise.
-    fn attempt_at(&mut self, idx: usize) -> Option<(u32, u32)> {
+    fn attempt(&mut self) -> Option<(u32, u32)> {
         let (w, h, d) = (self.p.grid_w, self.p.grid_h, self.p.grid_d);
 
-        let z   = idx / (w * h);
-        let y   = (idx % (w * h)) / w;
-        let x   = idx % w;
-        let s_old = self.grid[idx];
+        let x = self.rng.gen_range(0..w);
+        let y = self.rng.gen_range(0..h);
+        let z = self.rng.gen_range(0..d);
+        let s_old = self.grid[z * w * h + y * w + x];
 
         // Collect Moore-26 neighbours with a different sigma
         let mut candidates: Vec<u32> = Vec::with_capacity(26);
@@ -370,7 +367,7 @@ impl Cpm3d {
             || self.rng.gen_range(0.0f64..1.0) < (-dh / self.p.temperature).exp();
 
         if accept {
-            self.grid[idx] = s_new;
+            self.grid[z * w * h + y * w + x] = s_new;
             if s_old > 0 {
                 self.cells[s_old as usize].volume  -= 1;
                 self.cells[s_old as usize].surface += ds_old;
@@ -385,24 +382,18 @@ impl Cpm3d {
         }
     }
 
-    /// Run one MCS: shuffle all W×H×D pixel indices, then visit each exactly once.
+    /// Run one MCS: `mcs_size` random copy-attempts (with replacement).
     pub fn run_mcs(&mut self) {
-        self.shuffle_buf.shuffle(&mut self.rng);
-        for i in 0..self.shuffle_buf.len() {
-            let idx = self.shuffle_buf[i];
-            self.attempt_at(idx);
-        }
+        for _ in 0..self.mcs_size { self.attempt(); }
         self.mcs += 1;
     }
 
     /// Like `run_mcs` but returns one `Grow`/`Shrink` event per accepted copy attempt
     /// where a real cell (sigma > 0) gained or lost a voxel.
     pub fn run_mcs_tracked(&mut self) -> Vec<DemographyEvent> {
-        self.shuffle_buf.shuffle(&mut self.rng);
         let mut events = Vec::new();
-        for i in 0..self.shuffle_buf.len() {
-            let idx = self.shuffle_buf[i];
-            if let Some((s_old, s_new)) = self.attempt_at(idx) {
+        for _ in 0..self.mcs_size {
+            if let Some((s_old, s_new)) = self.attempt() {
                 let mcs = self.mcs;
                 if s_old > 0 {
                     let c = &self.cells[s_old as usize];
