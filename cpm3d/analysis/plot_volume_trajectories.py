@@ -2,7 +2,8 @@
 """
 plot_volume_trajectories.py
 ---------------------------
-Plot per-cell volume trajectories and population mean from growth_trace.csv.
+Plot per-cell volume trajectories and population mean from growth_trace.csv,
+plus a growth-rate-vs-radius figure.
 
 The CSV is produced by simulate_life with --track-growth.
 Column meaning after the user's sub-MCS timing change:
@@ -26,6 +27,7 @@ Usage
   python analysis/plot_volume_trajectories.py <data_dir> --out figures/
   python analysis/plot_volume_trajectories.py <data_dir> --mcs-range 0 50
   python analysis/plot_volume_trajectories.py <data_dir> --mcs-size 8000
+  python analysis/plot_volume_trajectories.py <data_dir> --window 0.5 --r-bins 25
 """
 
 import argparse
@@ -171,6 +173,167 @@ def plot_trajectories(df: pd.DataFrame, mcs_size: int, out_path: Path):
     print(f"→ {out_path}")
 
 
+# ── Growth rate vs radius ─────────────────────────────────────────────────────
+
+def vol_to_radius(v: np.ndarray) -> np.ndarray:
+    """Spherical approximation: r = (3V / 4π)^(1/3)."""
+    return np.cbrt(3.0 * np.asarray(v, dtype=float) / (4.0 * np.pi))
+
+
+def compute_growth_rates(
+    df: pd.DataFrame,
+    window: float = 0.5,
+    min_events: int = 4,
+) -> pd.DataFrame:
+    """
+    Sliding-window linear regression of volume vs time for each cell.
+
+    For every window of width `window` MCS units (step = window/2) that
+    contains at least `min_events` events, fit a line to (time, volume) and
+    record:
+        sigma        cell id
+        t_center     midpoint of the window (MCS units)
+        mean_volume  average volume in the window
+        radius       spherical radius from mean_volume
+        growth_rate  slope dV/dt  (voxels / MCS)
+
+    Parameters
+    ----------
+    window : float
+        Width of the sliding window in MCS units.
+    min_events : int
+        Minimum number of events required inside a window.
+    """
+    step = window / 2.0
+    records = []
+
+    for sigma, grp in df.groupby("sigma"):
+        grp   = grp.sort_values("time")
+        times = grp["time"].to_numpy(dtype=float)
+        vols  = grp["area_at_event"].to_numpy(dtype=float)
+
+        t_lo = times[0]
+        t_hi_max = times[-1] - window
+        if t_hi_max < t_lo:
+            continue  # track shorter than one window
+
+        t_start = t_lo
+        while t_start <= t_hi_max:
+            t_end = t_start + window
+            mask  = (times >= t_start) & (times < t_end)
+            n_ev  = mask.sum()
+            if n_ev >= min_events:
+                t_win = times[mask]
+                v_win = vols[mask]
+                # Weighted linear regression: more weight to later events
+                # (they represent the "current" state better in noisy CPM)
+                slope, _ = np.polyfit(t_win, v_win, 1)
+                mean_v   = v_win.mean()
+                records.append({
+                    "sigma":       sigma,
+                    "t_center":    (t_start + t_end) / 2.0,
+                    "mean_volume": mean_v,
+                    "radius":      float(vol_to_radius(mean_v)),
+                    "growth_rate": slope,
+                })
+            t_start += step
+
+    return pd.DataFrame(records) if records else pd.DataFrame(
+        columns=["sigma", "t_center", "mean_volume", "radius", "growth_rate"]
+    )
+
+
+def plot_growth_rate_vs_radius(
+    gr: pd.DataFrame,
+    out_path: Path,
+    window: float,
+    n_bins: int = 20,
+):
+    """
+    Scatter of (radius, dV/dt) coloured by cell, with binned mean ± 1 SD.
+
+    Each point is one sliding-window estimate from `compute_growth_rates`.
+    The binned mean smooths out fluctuations and reveals the population trend.
+    """
+    if gr.empty:
+        print("No growth-rate estimates — skipping growth_rate_vs_radius.png")
+        return
+
+    sigmas      = sorted(gr["sigma"].unique())
+    n_cells     = len(sigmas)
+    cmap        = matplotlib.colormaps.get_cmap("tab20").resampled(max(n_cells, 1))
+    sig_color   = {s: cmap(i % 20) for i, s in enumerate(sigmas)}
+
+    r    = gr["radius"].to_numpy()
+    rate = gr["growth_rate"].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    # ── Per-cell scatter ──────────────────────────────────────────────────────
+    for sigma in sigmas:
+        sub = gr[gr["sigma"] == sigma]
+        ax.scatter(
+            sub["radius"], sub["growth_rate"],
+            color=sig_color[sigma], s=10, alpha=0.25,
+            linewidths=0, label=f"σ={sigma}",
+            zorder=2,
+        )
+
+    # ── Binned mean ± SD ─────────────────────────────────────────────────────
+    r_min, r_max = r.min(), r.max()
+    edges   = np.linspace(r_min, r_max, n_bins + 1)
+    centres, means, stds, counts = [], [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (r >= lo) & (r < hi)
+        sub  = rate[mask]
+        if len(sub) < 3:
+            continue
+        centres.append((lo + hi) / 2.0)
+        means.append(sub.mean())
+        stds.append(sub.std())
+        counts.append(len(sub))
+
+    if centres:
+        c_arr = np.array(centres)
+        m_arr = np.array(means)
+        s_arr = np.array(stds)
+        ax.plot(c_arr, m_arr, color="crimson", lw=2.5, zorder=6,
+                label="binned mean")
+        ax.fill_between(c_arr, m_arr - s_arr, m_arr + s_arr,
+                        color="crimson", alpha=0.20, zorder=5, label="±1 SD")
+
+    ax.axhline(0, color="black", lw=0.8, ls="--", alpha=0.5)
+
+    ax.set_xlabel(
+        r"Radius  $r = \left(\frac{3\,\langle V \rangle}{4\pi}\right)^{1/3}$"
+        "  (voxels)",
+        fontsize=12,
+    )
+    ax.set_ylabel(r"Growth rate  $\mathrm{d}V/\mathrm{d}t$  (voxels / MCS)",
+                  fontsize=12)
+    ax.set_title(
+        f"Growth rate vs cell radius  "
+        f"(window={window} MCS,  {len(gr)} estimates,  {n_cells} cells)",
+        fontsize=12,
+    )
+
+    if n_cells <= 12:
+        ax.legend(fontsize=7, ncol=2, loc="upper left")
+    else:
+        # Only show the binned-mean legend entry
+        handles = [
+            plt.Line2D([0], [0], color="crimson", lw=2, label="binned mean"),
+            plt.Patch(color="crimson", alpha=0.25, label="±1 SD"),
+        ]
+        ax.legend(handles=handles, fontsize=9, loc="upper left")
+
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"→ {out_path}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -186,6 +349,16 @@ def main():
     ap.add_argument("--mcs-size", type=int, default=None,
                     help="Override w*h*d (attempts per MCS).  "
                          "Auto-detected from state JSON if omitted.")
+    ap.add_argument("--window", type=float, default=0.5,
+                    help="Sliding-window width for growth-rate estimation, "
+                         "in MCS units (default: 0.5).  "
+                         "Expressed as a fraction of the time axis t/WHD+MCS.")
+    ap.add_argument("--r-bins", type=int, default=20,
+                    help="Number of radius bins for the binned mean curve "
+                         "(default: 20).")
+    ap.add_argument("--min-events", type=int, default=4,
+                    help="Minimum events per window for a growth-rate estimate "
+                         "(default: 4).")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -222,8 +395,22 @@ def main():
         f"MCS {int(df['mcs'].min())}–{int(df['mcs'].max())})"
     )
 
-    # ── Plot ─────────────────────────────────────────────────────────────────
+    # ── Figure 1: volume trajectories ────────────────────────────────────────
     plot_trajectories(df, mcs_size, out_dir / "volume_trajectories.png")
+
+    # ── Figure 2: growth rate vs radius ──────────────────────────────────────
+    print(f"Computing growth rates  (window={args.window} MCS, "
+          f"min_events={args.min_events}) …")
+    gr = compute_growth_rates(df, window=args.window, min_events=args.min_events)
+    if gr.empty:
+        print("  No windows had enough events — try a larger --window or "
+              "a longer simulation with --track-growth.")
+    else:
+        print(f"  {len(gr)} window estimates across {gr['sigma'].nunique()} cells")
+        plot_growth_rate_vs_radius(
+            gr, out_dir / "growth_rate_vs_radius.png",
+            window=args.window, n_bins=args.r_bins,
+        )
 
 
 if __name__ == "__main__":
