@@ -142,29 +142,44 @@ impl Cpm3d {
         Self::build(p, cells)
     }
 
-    /// Empty init: cells start with lipid pre-filled so that
-    /// `target_volume = p.target_volume` at t=0.
-    /// When `growth_rate > 0`, `grow_cells` accumulates more lipid each MCS,
-    /// driving `target_volume` above the initial value.
-    /// When `growth_rate == 0`, `target_volume` stays at `p.target_volume`.
+    /// Seed cells with near-minimal actual volume but full `p.target_volume` target.
+    ///
+    /// Spheres are placed with radius derived from `MIN_VOL` (≈ 1 voxel each),
+    /// but every cell's `target_volume` is immediately set to `p.target_volume`
+    /// and `lipid` is pre-filled so that `lipid + MIN_VOL == p.target_volume`.
+    /// This means the volume energy drives cells to grow from birth toward their
+    /// prescribed target.  If `growth_rate > 0`, further lipid accumulation pushes
+    /// `target_volume` beyond the initial value each MCS.
     pub fn new_empty(p: Params) -> Self {
         let tv = p.target_volume;
         let lipid_init = (tv - MIN_VOL as i64).max(0) as f64;
         let ts = compute_surface_from_volume(tv as f64) as i64;
-        let cells: Vec<CellState> = (0..=p.n_cells)
+
+        // Cells are placed as tiny spheres (radius ≈ MIN_VOL^(1/3) ≈ 1 voxel).
+        let cells_small: Vec<CellState> = (0..=p.n_cells)
             .map(|k| {
-                let mut c = CellState::new_empty(k as u32);
-                if k == 0 {
-                    c.alive = false;
-                } else {
-                    c.lipid          = lipid_init;
-                    c.target_volume  = tv;
-                    c.target_surface = ts;
-                }
+                let mut c = CellState::new_empty(k as u32); // target_volume = MIN_VOL
+                if k == 0 { c.alive = false; }
                 c
             })
             .collect();
-        Self::build(p, cells)
+
+        // Temporarily set target_volume = MIN_VOL so build() places tiny spheres.
+        let mut p_seed = p.clone();
+        p_seed.target_volume  = MIN_VOL as i64;
+        p_seed.target_surface = compute_surface_from_volume(MIN_VOL as f64) as i64;
+        let mut sim = Self::build(p_seed, cells_small);
+
+        // Restore the real params and update every living cell's target/lipid.
+        sim.p.target_volume  = tv;
+        sim.p.target_surface = ts;
+        for c in sim.cells.iter_mut() {
+            if c.id == 0 || !c.alive { continue; }
+            c.target_volume  = tv;
+            c.target_surface = ts;
+            c.lipid          = lipid_init;
+        }
+        sim
     }
     #[inline]
     pub fn grid_set(&mut self, sigma: u32, x: usize, y: usize, z: usize)  {
