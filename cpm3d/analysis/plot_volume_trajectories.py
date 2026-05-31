@@ -42,6 +42,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.patches as mpatches
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -323,7 +324,7 @@ def plot_growth_rate_vs_radius(
         # Only show the binned-mean legend entry
         handles = [
             plt.Line2D([0], [0], color="crimson", lw=2, label="binned mean"),
-            plt.Patch(color="crimson", alpha=0.25, label="±1 SD"),
+            mpatches.Patch(color="crimson", alpha=0.25, label="±1 SD"),
         ]
         ax.legend(handles=handles, fontsize=9, loc="upper left")
 
