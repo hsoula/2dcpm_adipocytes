@@ -9,9 +9,10 @@
 //!   C              Toggle centroids
 //!   L              Toggle lighting / flat colours
 //!   X              Toggle clip plane (peels front faces to reveal interior)
-//!   [ / ]          Move clip plane toward / away from camera
-//!   R              Reset camera
+//!   U / I          Move clip plane out / in (AZERTY-friendly)
+//!   N / B          Cycle to next / previous living cell
 //!   D              Deselect cell
+//!   R              Reset camera
 //!   P              Save screenshot (screenshot_NNNN.png)
 //!   Space          Reload JSON from disk
 //!   Q / Esc        Quit
@@ -77,7 +78,11 @@ struct VOut {
     out.sigma = v.sigma;
     var col = v.color.rgb;
     if u.lighting != 0u {
-        let n  = normalize(mat3x3<f32>(u.rot[0].xyz, u.rot[1].xyz, u.rot[2].xyz) * v.normal);
+        var n = normalize(mat3x3<f32>(u.rot[0].xyz, u.rot[1].xyz, u.rot[2].xyz) * v.normal);
+        // Two-sided lighting: flip normal when looking at a back face so interior
+        // surfaces are equally lit (the clip plane reveals back faces).
+        let to_cam = u.clip_cam_pos.xyz - v.pos;
+        if dot(n, to_cam) < 0.0 { n = -n; }
         let l1 = vec3<f32>(0.0, 0.0, 1.0);
         let l2 = normalize(vec3<f32>(0.6, 0.8, 0.4));
         let diff = 0.25 + 0.55 * max(dot(n, l1), 0.0) + 0.20 * max(dot(n, l2), 0.0);
@@ -97,7 +102,7 @@ struct VOut {
     // ── Selection: dim all non-selected cells ─────────────────────────────────
     var alpha = in.alpha;
     if u.selected_sigma != 0u && u32(in.sigma) != u.selected_sigma {
-        alpha = 0.06;
+        alpha = 0.02;
     }
     return vec4<f32>(in.col, alpha);
 }
@@ -192,7 +197,7 @@ fn build_surface_mesh(
         let s = grid[z*w*h+y*w+x];
         if s == 0 { continue; }
         let col   = sigma_color(s);
-        let alpha = if selected == 0 || s == selected { 1.0 } else { 0.06 };
+        let alpha = if selected == 0 || s == selected { 1.0 } else { 0.02 };
         for (corners, nor, (dx,dy,dz)) in &CUBE_FACES {
             let (nx,ny,nz) = (x as i32+dx, y as i32+dy, z as i32+dz);
             let nb = if nx<0||nx>=w as i32||ny<0||ny>=h as i32||nz<0||nz>=d as i32 { 0 }
@@ -241,7 +246,7 @@ fn build_centroid_mesh(
         let dist  = dist_sq.sqrt();
         let t     = ((dist - d_near) / (d_far - d_near)).clamp(0.0, 1.0);
         let base_alpha = 1.0 - t * (1.0 - ALPHA_FAR);
-        let alpha = if selected != 0 && info.sigma != selected { 0.06 } else { base_alpha };
+        let alpha = if selected != 0 && info.sigma != selected { 0.02 } else { base_alpha };
         let col   = sigma_color(info.sigma);
         let r     = RADIUS;
         let [cx, cy, cz] = info.pos;
@@ -688,6 +693,25 @@ impl Viewer {
         }
     }
 
+    /// Cycle to the next (forward=true) or previous living cell.
+    fn cycle_selection(&mut self, forward: bool) {
+        let living: Vec<u32> = self.cells.iter()
+            .filter(|c| c.id > 0 && c.alive && c.volume > 0)
+            .map(|c| c.id)
+            .collect();
+        if living.is_empty() { return; }
+        let cur = living.iter().position(|&s| s == self.selected_sigma);
+        let next_idx = match cur {
+            None    => 0,
+            Some(i) => if forward {
+                (i + 1) % living.len()
+            } else {
+                (i + living.len() - 1) % living.len()
+            },
+        };
+        self.select(living[next_idx]);
+    }
+
     // ── Screenshot ────────────────────────────────────────────────────────────
 
     fn screenshot(&mut self) {
@@ -880,7 +904,8 @@ fn print_help() {
     println!("  C              Toggle centroids");
     println!("  L              Toggle lighting");
     println!("  X              Toggle clip plane (peels front to see inside)");
-    println!("  [ / ]          Move clip plane toward / away from camera");
+    println!("  U / I          Move clip plane out / in");
+    println!("  N / B          Cycle to next / previous cell");
     println!("  D              Deselect cell");
     println!("  R              Reset camera");
     println!("  P              Screenshot");
@@ -975,16 +1000,19 @@ fn main() {
                         if viewer.clip_on { viewer.clip_depth = 0.0; }
                         println!("Clip plane: {}", if viewer.clip_on {"ON"} else {"OFF"});
                     }
-                    // Move clip plane: ] = push plane away from cam (clips more front)
-                    //                  [ = pull plane back (clips less)
-                    KeyCode::BracketRight => {
+                    // Move clip plane: I = push deeper (clips more front, reveals inside)
+                    //                  U = pull back (shows more of the front)
+                    KeyCode::KeyI => {
                         viewer.clip_depth += viewer.grid_dim * 0.05;
                         println!("Clip depth: {:.1}", viewer.clip_depth);
                     }
-                    KeyCode::BracketLeft => {
+                    KeyCode::KeyU => {
                         viewer.clip_depth = (viewer.clip_depth - viewer.grid_dim * 0.05).max(0.0);
                         println!("Clip depth: {:.1}", viewer.clip_depth);
                     }
+                    // Cycle through living cells
+                    KeyCode::KeyN => viewer.cycle_selection(true),
+                    KeyCode::KeyB => viewer.cycle_selection(false),
                     _ => {}
                 },
                 _ => {}
