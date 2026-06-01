@@ -1,6 +1,6 @@
 dir=data/growth_functional
 rm -f $dir/*.*
-cargo run --release --bin simulate_growth \
+cargo run --release --bin simulate_life \
 -- --grid-w 20 --grid-h 20 --grid-d 20 \
 --target-volume 200 --volume-sigma 0  \
 --n-cells 40  --lv 2.0 --ls 2.0 --li 0.0  \

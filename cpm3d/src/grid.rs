@@ -407,7 +407,7 @@ impl Cpm3d {
     /// where a real cell (sigma > 0) gained or lost a voxel.
     pub fn run_mcs_tracked(&mut self) -> Vec<DemographyEvent> {
         let mut events = Vec::new();
-        for _ in 0..self.mcs_size {
+        for t in 0..self.mcs_size {
             if let Some((s_old, s_new)) = self.attempt() {
                 let mcs = self.mcs;
                 if s_old > 0 {
@@ -417,8 +417,8 @@ impl Cpm3d {
                         sigma: s_old,
                         mcs,
                         volume_at_event: c.volume,
-                        birth_mcs: c.birth_mcs,
-                        lifetime_mcs: mcs.saturating_sub(c.birth_mcs),
+                        birth_mcs: t,
+                        lifetime_mcs: self.mcs,
                     });
                 }
                 if s_new > 0 {
@@ -428,8 +428,8 @@ impl Cpm3d {
                         sigma: s_new,
                         mcs,
                         volume_at_event: c.volume,
-                        birth_mcs: c.birth_mcs,
-                        lifetime_mcs: mcs.saturating_sub(c.birth_mcs),
+                        birth_mcs: t,
+                        lifetime_mcs: self.mcs,
                     });
                 }
             }

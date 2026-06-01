@@ -68,7 +68,7 @@ fn main() {
         p.birth_rate    = cli.birth_rate;
         p.death_rate    = cli.death_rate;
         p.seed          = cli.seed;
-        Cpm3d::new_empty(p)
+        Cpm3d::new(p)
     };
 
     println!(
@@ -103,31 +103,31 @@ fn main() {
                 .expect("cannot write growth_trace row");
         }
         // -- do the demography
-        let dem_events = sim.step_demography();
-
-        // ── Handle demography events ─────────────────────────────────────────
-        if !dem_events.is_empty() {
-            for ev in &dem_events {
-                let kind_str = match ev.kind {
-                    EventKind::Birth => "birth",
-                    EventKind::Dead => "death",
-                    EventKind::Dying => "dying",
-                    EventKind::Grow => "growth",
-                    EventKind::Shrink => "shrink",
-                };
-                writeln!(
-                    events_csv,
-                    "{},{},{},{},{},{}",
-                    kind_str, ev.mcs, ev.sigma,
-                    ev.volume_at_event, ev.birth_mcs, ev.lifetime_mcs
-                ).expect("cannot write event row");
-                //
-                // // PNG snapshot for every event
-                // let tag = format!("{}/{}/event_{}_{}_mcs{:06}_s{}.png",
-                //                   &cli.out_dir, "events", kind_str, ev.sigma, ev.mcs, ev.sigma);
-                // save_png(&sim, Some(&tag));
-            }
-        }
+        // let dem_events = sim.step_demography();
+        //
+        // // ── Handle demography events ─────────────────────────────────────────
+        // if !dem_events.is_empty() {
+        //     for ev in &dem_events {
+        //         let kind_str = match ev.kind {
+        //             EventKind::Birth => "birth",
+        //             EventKind::Dead => "death",
+        //             EventKind::Dying => "dying",
+        //             EventKind::Grow => "growth",
+        //             EventKind::Shrink => "shrink",
+        //         };
+        //         writeln!(
+        //             events_csv,
+        //             "{},{},{},{},{},{}",
+        //             kind_str, ev.mcs, ev.sigma,
+        //             ev.volume_at_event, ev.birth_mcs, ev.lifetime_mcs
+        //         ).expect("cannot write event row");
+        //         //
+        //         // // PNG snapshot for every event
+        //         // let tag = format!("{}/{}/event_{}_{}_mcs{:06}_s{}.png",
+        //         //                   &cli.out_dir, "events", kind_str, ev.sigma, ev.mcs, ev.sigma);
+        //         // save_png(&sim, Some(&tag));
+        //     }
+//        }
 
         let is_last = sim.mcs + 1 == cli.steps;
 

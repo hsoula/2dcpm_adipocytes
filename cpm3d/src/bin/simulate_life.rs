@@ -89,7 +89,7 @@ fn main() {
         Some(f)
     } else {
         None
-    };
+    };  
 
     sim.print_stats();
     sim.save_state(None);
